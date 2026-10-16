@@ -79,3 +79,7 @@ Data Fabric 通过统一的连接适配接入 Trino、Presto 和 OpenLooKeng 查
 ## 项目与社区
 
 [贡献指南](CONTRIBUTING.md) · [安全政策](SECURITY.md) · [获取帮助](SUPPORT.md) · [发布流程](docs/releasing.md) · [GitHub Releases](https://github.com/RhinoLink-Tech/data-fabric/releases)
+
+## 许可证
+
+本项目采用 Apache License 2.0，详见 [LICENSE](LICENSE)。
