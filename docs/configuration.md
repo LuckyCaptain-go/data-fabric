@@ -29,6 +29,9 @@ security:
     enabled: true
     requests: 100
     window: 1m
+  # Open database sessions read-only where the engine supports it (#20);
+  # cannot be disabled in release mode.
+  enforce_read_only: true
 
 logging:
   level: info
@@ -101,6 +104,11 @@ query:
 | `security.rateLimit.enabled` | Boolean | Enable rate limiting | true |
 | `security.rateLimit.requests` | Integer | Max requests per window | 100 |
 | `security.rateLimit.window` | Duration | Time window for rate limiting | 1m |
+
+#### Read-Only Enforcement
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `security.enforce_read_only` | Boolean | Open database sessions read-only where the engine supports it (#20); see [docs/readonly-access.md](readonly-access.md) for the engine matrix and the per-data-source opt-out | true |
 
 ### Logging Configuration
 
@@ -200,6 +208,7 @@ Back up the database and key material securely before rotation. Do not put actua
 | Setting | Local development (`debug`/`test`) | Production (`release`) |
 |---|---|---|
 | `security.enable_auth` | May be `false` to leave the data-source management API unauthenticated; `/api/v1/fetch` still requires a Bearer token either way (#6) | Must be `true`; the server refuses to start otherwise |
+| `security.enforce_read_only` | May be `false` for engines that reject the read-only init | Must be `true`; the server refuses to start otherwise (#20) |
 | `security.jwt_secret` | Required whenever the HTTP server runs: set, not a known placeholder, at least 32 bytes | Same |
 | `server.mode` | `debug` / `test` | `release` |
 
@@ -241,6 +250,16 @@ Any configuration errors will cause the application to exit with an informative 
 - Use secrets management systems in production
 - Regularly rotate credentials
 - Apply principle of least privilege
+
+### Read-Only Access
+- Data-source sessions are opened read-only where the engine supports it
+  (`security.enforce_read_only`, #20); see
+  [docs/readonly-access.md](readonly-access.md) for the engine support
+  matrix, the per-data-source opt-out, and a least-privilege account
+  cookbook
+- Engines without a session read-only mode rely on SQL validation plus a
+  least-privilege account — provision read-only credentials for every data
+  source
 
 ### Production Settings
 - Set server mode to `release` in production

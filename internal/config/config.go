@@ -38,6 +38,9 @@ type SecurityConfig struct {
 	RateLimitBurst     int           `mapstructure:"rate_limit_burst"`
 	EnableAuth         bool          `mapstructure:"enable_auth"`
 	EnableRateLimit    bool          `mapstructure:"enable_rate_limit"`
+	// EnforceReadOnly opens database sessions read-only where the engine
+	// supports it (#20). It cannot be disabled in release mode.
+	EnforceReadOnly bool `mapstructure:"enforce_read_only"`
 }
 
 type LoggingConfig struct {
@@ -102,6 +105,7 @@ func setDefaults() {
 	viper.SetDefault("security.rate_limit_burst", 10)
 	viper.SetDefault("security.enable_auth", true)
 	viper.SetDefault("security.enable_rate_limit", true)
+	viper.SetDefault("security.enforce_read_only", true)
 
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")

@@ -88,7 +88,7 @@ func startHTTPServer(cfg *config.Config, vault *security.CredentialVault) error 
 	}
 
 	// Initialize infrastructure
-	connPool := database.NewConnectionPool(security.NewTokenManager(vault), vault)
+	connPool := database.NewConnectionPool(security.NewTokenManager(vault), vault, cfg.Security.EnforceReadOnly)
 	healthChecker := database.NewHealthChecker(connPool)
 
 	// Initialize security
@@ -167,7 +167,7 @@ func startMCPServer(cfg *config.Config, vault *security.CredentialVault) error {
 		log.Printf("Encrypted or rotated credentials for %d data sources", migrated)
 	}
 
-	connPool := database.NewConnectionPool(security.NewTokenManager(vault), vault)
+	connPool := database.NewConnectionPool(security.NewTokenManager(vault), vault, cfg.Security.EnforceReadOnly)
 	streamingService := service.NewStreamingService(datasourceRepo, connPool)
 	paginationService := service.NewQueryService(datasourceRepo, connPool, cfg.Query.PreferStreaming)
 	queryService := unifiedservice.NewUnifiedQueryService(paginationService, streamingService, cfg)
