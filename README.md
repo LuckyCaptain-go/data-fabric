@@ -66,6 +66,8 @@ go run ./cmd/server
 
 请将示例占位值替换为 openssl rand -base64 32 生成并安全保存的密钥；服务重启时继续使用同一密钥。健康检查路径为 /health，生产环境应通过密钥管理系统注入。
 
+数据源会话在引擎支持时以只读方式打开（`security.enforce_read_only`，#20），与应用层 SELECT 校验构成纵深防御；支持的引擎与最小权限账号配置见 [只读访问指南](docs/readonly-access.md)。
+
 更多信息参见 [API 使用指南](docs/api_usage.md)、[架构设计](docs/architecture.md)、[配置指南](docs/configuration.md)、[开发指南](docs/development.md) 和 [中文完整说明](README_zh.md)。
 
 如果这个项目对你有帮助，欢迎点亮 GitHub Star，也欢迎通过 Issue、Pull Request 参与开源共建。

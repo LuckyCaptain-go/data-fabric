@@ -39,7 +39,7 @@ func deadDB() *sql.DB {
 func TestGetConnectionEvictsDeadPooledConnection(t *testing.T) {
 	const unregisteredType = model.DatabaseType("__unregistered_for_test__")
 
-	pool := NewConnectionPool(nil, nil)
+	pool := NewConnectionPool(nil, nil, false)
 	pool.pools["ds-1"] = deadDB()
 
 	dataSource := &model.DataSource{
@@ -69,7 +69,7 @@ func TestRegistryDependentHelpersWorkOnColdStart(t *testing.T) {
 	registryOnce = sync.Once{}
 	globalDriverRegistry = nil
 
-	pool := NewConnectionPool(nil, nil)
+	pool := NewConnectionPool(nil, nil, false)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -95,5 +95,39 @@ func TestRegistryDependentHelpersWorkOnColdStart(t *testing.T) {
 	}
 	if paginated == "SELECT 1" {
 		t.Errorf("ApplyBatchPagination returned the query unchanged: %q", paginated)
+	}
+}
+
+// Read-only enforcement is the global flag ANDed with a per-data-source
+// override that can only opt out, never re-enable (#20).
+func TestReadOnlyEnforced(t *testing.T) {
+	tests := []struct {
+		name   string
+		global bool
+		props  map[string]interface{}
+		want   bool
+	}{
+		{"global off", false, nil, false},
+		{"global on without override", true, nil, true},
+		{"bool false opts out", true, map[string]interface{}{"enforce_read_only": false}, false},
+		{"bool true stays enforced", true, map[string]interface{}{"enforce_read_only": true}, true},
+		{"string false opts out", true, map[string]interface{}{"enforce_read_only": "false"}, false},
+		{"string off opts out", true, map[string]interface{}{"enforce_read_only": "off"}, false},
+		{"string 0 opts out", true, map[string]interface{}{"enforce_read_only": "0"}, false},
+		{"unrecognized string stays enforced", true, map[string]interface{}{"enforce_read_only": "banana"}, true},
+		{"unrelated properties ignored", true, map[string]interface{}{"pool_hint": false}, true},
+		// A per-data-source override can only weaken enforcement; the global
+		// flag is the release-mode lock (#20).
+		{"global off cannot be re-enabled per data source", false, map[string]interface{}{"enforce_read_only": true}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := NewConnectionPool(nil, nil, tt.global)
+			config := &model.DataSourceConfig{AdditionalProps: tt.props}
+			if got := pool.readOnlyEnforced(config); got != tt.want {
+				t.Errorf("readOnlyEnforced() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

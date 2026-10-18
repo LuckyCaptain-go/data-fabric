@@ -18,6 +18,12 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
+- Data-source sessions are now opened read-only where the engine supports it (#20), adding database-side defense-in-depth on top of application-layer SELECT validation.
+  - MySQL-protocol engines (mysql, mariadb, tidb, oceanbase_mysql, tdsql, gbase_8s/8t) run `SET SESSION TRANSACTION READ ONLY` on every pooled connection; PostgreSQL-protocol engines (postgresql, gaussdb_*, kingbasees, opengauss, oscar) receive `default_transaction_read_only=on`.
+  - **Behavior change**: engines that reject the init statement or parameter fail connection creation instead of silently continuing (fail-closed). If an engine version rejects it, opt out per data source with `additionalProps: {enforce_read_only: false}`.
+  - `security.enforce_read_only` (default `true`) cannot be disabled in `release` mode. Doris, StarRocks, Hologres, and Redshift are excluded pending live verification; they keep SQL validation only — see `docs/readonly-access.md` for the matrix and a least-privilege account cookbook.
+  - `POST /api/v1/database/test-connection` now reports `readOnlyEnforced` and warns when the account holds write or administrative privileges; `validate-config` warns for types without database-side enforcement.
+  - The SQL validator now also rejects filesystem/administrative functions reachable from a SELECT (`pg_read_file`, `lo_import`, `dblink`, `pg_sleep`, ...).
 - `configs/config.yaml` is no longer tracked by git: it contained real credentials in the repository history. Copy `configs/config.yaml.example` (placeholders only) for local setup, and keep real secrets out of the file.
   - Back up your local `configs/config.yaml` before pulling this change (`cp configs/config.yaml ~/config.yaml.bak`); git will otherwise delete or conflict with it.
   - `DATABASE_USERNAME`, `DATABASE_PASSWORD`, and `JWT_SECRET` now actually override the config file, matching the documentation.

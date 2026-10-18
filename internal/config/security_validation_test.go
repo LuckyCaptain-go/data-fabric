@@ -63,6 +63,8 @@ func TestValidateSecurity(t *testing.T) {
 					EnableAuth:    tt.auth,
 					JWTSecret:     tt.secret,
 					JWTExpiration: tt.expiry,
+					// The read-only lock has its own test below.
+					EnforceReadOnly: true,
 				},
 			}
 			err := cfg.ValidateSecurity()
@@ -70,6 +72,50 @@ func TestValidateSecurity(t *testing.T) {
 				t.Errorf("ValidateSecurity() = nil, want error")
 			}
 			if !tt.wantErr && err != nil {
+				t.Errorf("ValidateSecurity() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestValidateSecurityReadOnlyReleaseLock(t *testing.T) {
+	longSecret := strings.Repeat("s", 44)
+
+	tests := []struct {
+		name         string
+		mode         string
+		readOnly     bool
+		wantErr      bool
+		wantErrPhase string
+	}{
+		{"release with read-only disabled", "release", false, true, "enforce_read_only"},
+		{"release with read-only enabled", "release", true, false, ""},
+		{"debug may disable read-only", "debug", false, false, ""},
+		{"test may disable read-only", "test", false, false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Server: ServerConfig{Mode: tt.mode},
+				Security: SecurityConfig{
+					EnableAuth:      true,
+					JWTSecret:       longSecret,
+					JWTExpiration:   24 * time.Hour,
+					EnforceReadOnly: tt.readOnly,
+				},
+			}
+			err := cfg.ValidateSecurity()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateSecurity() = nil, want error")
+				}
+				if tt.wantErrPhase != "" && !strings.Contains(err.Error(), tt.wantErrPhase) {
+					t.Errorf("ValidateSecurity() error = %q, want it to mention %q", err, tt.wantErrPhase)
+				}
+				return
+			}
+			if err != nil {
 				t.Errorf("ValidateSecurity() = %v, want nil", err)
 			}
 		})

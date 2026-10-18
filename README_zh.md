@@ -113,6 +113,8 @@ go run ./cmd/server
 
 请将示例占位值替换为 openssl rand -base64 32 生成的密钥，并在服务重启时继续使用同一密钥。密钥注入、旧凭据迁移和轮换方式见配置指南。
 
+数据源会话在引擎支持时以只读方式打开（`security.enforce_read_only`，#20），与应用层 SELECT 校验构成纵深防御；支持的引擎与最小权限账号配置见 [只读访问指南](docs/readonly-access.md)。
+
 ## API 概览
 
 | 方法 | 路径 | 用途 | 认证 |

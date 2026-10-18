@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/database"
+	"github.com/RhinoLink-Tech/data-fabric/internal/database/readonly"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
 	"github.com/RhinoLink-Tech/data-fabric/pkg/response"
@@ -315,5 +318,33 @@ func (dc *DatabaseController) getConfigWarnings(config *model.DataSourceConfig, 
 		warnings = append(warnings, "SSL is disabled - connection will not be encrypted")
 	}
 
+	// Read-only enforcement advisories (#20)
+	if !readonly.SupportsReadOnlySession(dbType) {
+		warnings = append(warnings, fmt.Sprintf("%s has no database-side read-only session mode; queries are restricted by SQL validation only - use a least-privilege read-only database account (docs/readonly-access.md)", dbType))
+	}
+	if disabled, ok := readOnlyOverrideDisabled(config); ok && disabled {
+		warnings = append(warnings, "read-only session enforcement is disabled for this data source; queries are restricted by SQL validation only")
+	}
+
 	return warnings
+}
+
+// readOnlyOverrideDisabled reports whether the per-data-source opt-out in
+// additionalProps.enforce_read_only disables database-side read-only
+// enforcement (#20).
+func readOnlyOverrideDisabled(config *model.DataSourceConfig) (disabled bool, present bool) {
+	override, ok := config.AdditionalProps["enforce_read_only"]
+	if !ok {
+		return false, false
+	}
+	switch value := override.(type) {
+	case bool:
+		return !value, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "false", "off", "0":
+			return true, true
+		}
+	}
+	return false, true
 }

@@ -34,7 +34,7 @@ func newStreamingTestService(t *testing.T, server *httptest.Server) (*streamingS
 		Config: model.DataSourceConfig{Host: endpoint.Hostname(), Port: port, Database: "lakehouse", Schema: "sales", Username: "data-fabric"},
 	}
 	database.GetDriverRegistry()
-	pool := database.NewConnectionPool(nil, nil)
+	pool := database.NewConnectionPool(nil, nil, false)
 	svc := NewStreamingService(federationSourceRepository{source: source}, pool).(*streamingService)
 	t.Cleanup(svc.cleanupCancel)
 	return svc, pool

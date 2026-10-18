@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers"
+	"github.com/RhinoLink-Tech/data-fabric/internal/database/readonly"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 )
 
@@ -104,6 +105,11 @@ type HealthCheckResult struct {
 	Message      string        `json:"message,omitempty"`
 	Latency      time.Duration `json:"latency"`
 	CheckedAt    time.Time     `json:"checkedAt"`
+	// ReadOnlyEnforced reports whether the enforced connection actually runs
+	// read-only (#20); nil when the type has no read-only session mode or
+	// enforcement is disabled.
+	ReadOnlyEnforced *bool    `json:"readOnlyEnforced,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 // DatabaseHealthSummary represents a summary of database health
@@ -250,12 +256,36 @@ func (hc *HealthChecker) CheckDataSourceConnectivity(ctx context.Context, config
 	if err != nil {
 		result.Status = "unhealthy"
 		result.Message = fmt.Sprintf("Connection test failed: %s", redactConnectionError(err, config))
-	} else {
-		result.Status = "healthy"
-		result.Message = "Connection successful"
+		return result, nil
 	}
 
+	result.Status = "healthy"
+	result.Message = "Connection successful"
+	hc.verifyReadOnlySession(ctx, result, driver, dsn, config, dbType)
 	return result, nil
+}
+
+// verifyReadOnlySession probes the enforced connection so a healthy check
+// reports whether sessions actually run read-only (#20). The raw
+// connectivity test above already passed, so an enforcement failure is
+// reported as readOnlyEnforced=false plus a warning instead of an unhealthy
+// status; the distinction matters when an engine rejects the read-only init.
+func (hc *HealthChecker) verifyReadOnlySession(ctx context.Context, result *HealthCheckResult, driver drivers.Driver, dsn string, config *model.DataSourceConfig, dbType model.DatabaseType) {
+	if !readonly.SupportsReadOnlySession(dbType) || !hc.connPool.readOnlyEnforced(config) {
+		return
+	}
+
+	enforced, warnings, err := readonly.VerifySession(ctx, dbType, driver.Open, dsn)
+	result.Warnings = append(result.Warnings, warnings...)
+	if err != nil {
+		result.ReadOnlyEnforced = new(bool)
+		result.Warnings = append(result.Warnings, "read-only session verification failed (queries stay blocked by SQL validation): "+redactConnectionError(err, config))
+		return
+	}
+	result.ReadOnlyEnforced = &enforced
+	if !enforced {
+		result.Warnings = append(result.Warnings, "session read-only flag was not set after enforcement; treat this data source as not read-only")
+	}
 }
 
 // PeriodicHealthCheck performs periodic health checks
