@@ -856,40 +856,7 @@ func (ss *streamingService) getRowCount(ctx context.Context, db *sql.DB, sql str
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Remove ORDER BY clauses for count query as they don't affect the count
-	// Use case-insensitive regex to preserve original case of identifiers
-	countSQL := removeOrderByClause(sql)
-
-	// For complex queries with GROUP BY or DISTINCT, use subquery approach
-	upperSQL := strings.ToUpper(strings.TrimSpace(countSQL))
-	if strings.Contains(upperSQL, "GROUP BY") || strings.Contains(upperSQL, "DISTINCT") {
-		// Try standard ANSI SQL approach first (works for most databases)
-		countSQL = fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS t", countSQL)
-
-		// Execute the count query
-		var count int64
-		err := db.QueryRowContext(ctx, countSQL).Scan(&count)
-		if err != nil {
-			// If the standard approach fails, try Oracle-style approach without alias
-			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM (%s)", removeOrderByClause(sql))
-			err = db.QueryRowContext(ctx, countSQL).Scan(&count)
-			if err != nil {
-				return 0, fmt.Errorf("failed to count rows: %w", err)
-			}
-		}
-		return count, nil
-	} else {
-		// For simpler queries, replace SELECT clause with COUNT(*)
-		countSQL = replaceSelectWithCount(countSQL)
-
-		var count int64
-		err := db.QueryRowContext(ctx, countSQL).Scan(&count)
-		if err != nil {
-			return 0, fmt.Errorf("failed to count rows: %w", err)
-		}
-
-		return count, nil
-	}
+	return countRowsInQuery(ctx, db, sql)
 }
 
 // mapDatabaseTypeToStandard maps database-specific type to standardized type
