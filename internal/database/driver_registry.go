@@ -60,7 +60,7 @@ func (dr *DriverRegistry) registerDrivers() {
 		return &traditional.OracleDriver{}
 	})
 	dr.register(model.DatabaseTypeSQLServer, func() drivers.Driver {
-		return &traditional.SQLServerDriver{}
+		return traditional.NewSQLServerDriver()
 	})
 
 	// Chinese domestic databases
@@ -119,7 +119,7 @@ func (dr *DriverRegistry) registerDrivers() {
 	})
 	// Big Data Warehouses
 	dr.register(model.DatabaseTypeApacheHive, func() drivers.Driver {
-		return &warehouses.HiveDriver{}
+		return warehouses.NewHiveDriver()
 	})
 	dr.register(model.DatabaseTypeTrino, func() drivers.Driver {
 		return warehouses.NewTrinoDriver()
@@ -148,12 +148,12 @@ func (dr *DriverRegistry) registerDrivers() {
 		return &olap.DruidDriver{}
 	})
 	dr.register(model.DatabaseTypeHologres, func() drivers.Driver {
-		return &olap.HologresDriver{}
+		return olap.NewHologresDriver()
 	})
 
 	// NoSQL databases
 	dr.register(model.DatabaseTypeMongoDB, func() drivers.Driver {
-		return &nosql.MongoDriver{}
+		return nosql.NewMongoDriver()
 	})
 
 	// Data Lake Table Formats

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -180,7 +181,7 @@ func (dc *DataSourceController) CreateDataSource(c *gin.Context) {
 
 	dataSource, err := dc.service.CreateDataSource(c.Request.Context(), &req)
 	if err != nil {
-		if err == service.ErrDataSourceExists {
+		if errors.Is(err, service.ErrDataSourceExists) {
 			appErr := utils.NewConflictError("data source", "Data source with this name already exists")
 			dc.sendError(c, utils.GetErrorStatus(appErr), appErr.Code, appErr.Message)
 			return
@@ -216,11 +217,11 @@ func (dc *DataSourceController) GetDataSource(c *gin.Context) {
 
 	dataSource, err := dc.service.GetDataSource(c.Request.Context(), id)
 	if err != nil {
-		if err == service.ErrDataSourceNotFound {
+		if errors.Is(err, service.ErrDataSourceNotFound) {
 			dc.sendError(c, http.StatusNotFound, "DATASOURCE_NOT_FOUND", "Data source not found")
 			return
 		}
-		if err == service.ErrInvalidUUID {
+		if errors.Is(err, service.ErrInvalidUUID) {
 			dc.sendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid data source ID format")
 			return
 		}
@@ -315,11 +316,11 @@ func (dc *DataSourceController) UpdateDataSource(c *gin.Context) {
 
 	dataSource, err := dc.service.UpdateDataSource(c.Request.Context(), id, &req)
 	if err != nil {
-		if err == service.ErrDataSourceNotFound {
+		if errors.Is(err, service.ErrDataSourceNotFound) {
 			dc.sendError(c, http.StatusNotFound, "DATASOURCE_NOT_FOUND", "Data source not found")
 			return
 		}
-		if err == service.ErrInvalidUUID {
+		if errors.Is(err, service.ErrInvalidUUID) {
 			dc.sendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid data source ID format")
 			return
 		}
@@ -353,11 +354,11 @@ func (dc *DataSourceController) DeleteDataSource(c *gin.Context) {
 
 	err := dc.service.DeleteDataSource(c.Request.Context(), id)
 	if err != nil {
-		if err == service.ErrDataSourceNotFound {
+		if errors.Is(err, service.ErrDataSourceNotFound) {
 			dc.sendError(c, http.StatusNotFound, "DATASOURCE_NOT_FOUND", "Data source not found")
 			return
 		}
-		if err == service.ErrInvalidUUID {
+		if errors.Is(err, service.ErrInvalidUUID) {
 			dc.sendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid data source ID format")
 			return
 		}
@@ -432,11 +433,11 @@ func (dc *DataSourceController) changeDataSourceStatus(c *gin.Context, action st
 
 	err := statusFunc(c.Request.Context(), id)
 	if err != nil {
-		if err == service.ErrDataSourceNotFound {
+		if errors.Is(err, service.ErrDataSourceNotFound) {
 			dc.sendError(c, http.StatusNotFound, "DATASOURCE_NOT_FOUND", "Data source not found")
 			return
 		}
-		if err == service.ErrInvalidUUID {
+		if errors.Is(err, service.ErrInvalidUUID) {
 			dc.sendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid data source ID format")
 			return
 		}

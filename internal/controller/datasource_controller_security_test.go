@@ -18,13 +18,14 @@ import (
 type dataSourceControllerServiceStub struct {
 	dataSource *model.DataSource
 	createErr  error
+	getErr     error
 }
 
 func (s *dataSourceControllerServiceStub) CreateDataSource(context.Context, *service.CreateDataSourceRequest) (*model.DataSource, error) {
 	return s.dataSource, s.createErr
 }
 func (s *dataSourceControllerServiceStub) GetDataSource(context.Context, string) (*model.DataSource, error) {
-	return s.dataSource, nil
+	return s.dataSource, s.getErr
 }
 func (s *dataSourceControllerServiceStub) GetDataSourceByName(context.Context, string) (*model.DataSource, error) {
 	return s.dataSource, nil
