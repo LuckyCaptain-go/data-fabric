@@ -279,10 +279,18 @@ func (sv *SQLValidator) checkDangerousKeywords(sql string) error {
 		"EXEC", "EXECUTE", "CALL", "DO",
 	}
 
+	// Functions with filesystem access, side effects, or outbound
+	// connections that can be invoked from a SELECT (#20). Word boundaries
+	// keep identifiers such as a dblink_id column from matching.
+	dangerousFunctions := []string{
+		"PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR",
+		"LO_IMPORT", "LO_EXPORT", "DBLINK", "PG_SLEEP",
+	}
+
 	// Convert to uppercase for comparison
 	upperSQL := strings.ToUpper(sql)
 
-	for _, keyword := range dangerousKeywords {
+	for _, keyword := range append(dangerousKeywords, dangerousFunctions...) {
 		// Use word boundaries to avoid false positives
 		pattern := `\b` + keyword + `\b`
 		matched, _ := regexp.MatchString(pattern, upperSQL)
