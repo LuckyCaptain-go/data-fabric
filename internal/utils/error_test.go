@@ -12,6 +12,7 @@ func TestErrorHelpers(t *testing.T) {
 	wrapped := fmt.Errorf("load data source: %w", notFound)
 	unknown := NewErrorBuilder("CUSTOM_ERROR").Build()
 	outer := NewErrorBuilder(ErrCodeConflict).WithCause(notFound).Build()
+	custom := NewErrorBuilder(ErrCodeNotFound).WithStatus(http.StatusGone).Build()
 
 	tests := []struct {
 		name       string
@@ -32,6 +33,8 @@ func TestErrorHelpers(t *testing.T) {
 		{"outer app error", outer, ErrCodeConflict, true, http.StatusConflict},
 		{"inner app error is not selected", outer, ErrCodeNotFound, false, http.StatusConflict},
 		{"wrapped outer app error", fmt.Errorf("request: %w", outer), ErrCodeConflict, true, http.StatusConflict},
+		{"custom status", custom, ErrCodeNotFound, true, http.StatusGone},
+		{"wrapped custom status", fmt.Errorf("request: %w", custom), ErrCodeNotFound, true, http.StatusGone},
 	}
 
 	for _, tt := range tests {
