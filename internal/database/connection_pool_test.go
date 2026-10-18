@@ -30,11 +30,8 @@ func TestReadOnlyEnforced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := NewConnectionPool(nil, nil, tt.global)
-			dataSource := &model.DataSource{
-				Type:   model.DatabaseTypeMySQL,
-				Config: model.DataSourceConfig{AdditionalProps: tt.props},
-			}
-			if got := pool.readOnlyEnforced(dataSource); got != tt.want {
+			config := &model.DataSourceConfig{AdditionalProps: tt.props}
+			if got := pool.readOnlyEnforced(config); got != tt.want {
 				t.Errorf("readOnlyEnforced() = %v, want %v", got, tt.want)
 			}
 		})

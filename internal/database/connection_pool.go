@@ -95,7 +95,7 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 
 	// Inject the read-only session parameter where the dialect uses DSN
 	// parameters for it (#20).
-	readOnly := cp.readOnlyEnforced(dataSource)
+	readOnly := cp.readOnlyEnforced(&dataSource.Config)
 	if readOnly {
 		if roDSN, ok := readonly.ApplyDSN(dataSource.Type, dsn); ok {
 			dsn = roDSN
@@ -156,11 +156,11 @@ func (cp *ConnectionPool) openDatabase(dbType model.DatabaseType, dsn string, en
 // the per-data-source override additionalProps.enforce_read_only (#20). The
 // override accepts booleans and the strings "false"/"off"/"0" (JSON gives
 // either shape).
-func (cp *ConnectionPool) readOnlyEnforced(dataSource *model.DataSource) bool {
+func (cp *ConnectionPool) readOnlyEnforced(config *model.DataSourceConfig) bool {
 	if !cp.enforceReadOnly {
 		return false
 	}
-	if override, ok := dataSource.Config.AdditionalProps["enforce_read_only"]; ok {
+	if override, ok := config.AdditionalProps["enforce_read_only"]; ok {
 		switch value := override.(type) {
 		case bool:
 			return value
