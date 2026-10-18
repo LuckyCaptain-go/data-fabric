@@ -29,6 +29,11 @@ security:
   enable_rate_limit: true
   rate_limit_per_minute: 60
   rate_limit_burst: 10
+  # 数据库级只读会话强制（#20）：MySQL/PostgreSQL 系引擎的连接以只读打开，
+  # 引擎本身拒绝写操作（纵深防御，应用层 SELECT 校验之外的第二道防线）。
+  # release 模式下不允许关闭；个别引擎不支持时，可对该数据源单独关闭：
+  # additionalProps: { enforce_read_only: false }（详见 docs/readonly-access.md）。
+  enforce_read_only: true
 
 logging:
   level: "info"

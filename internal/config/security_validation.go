@@ -33,6 +33,15 @@ func (c *Config) ValidateSecurity() error {
 		return fmt.Errorf("security.enable_auth cannot be disabled in release mode: enable authentication or run an explicit non-release mode")
 	}
 
+	// Database-side read-only sessions are a defense-in-depth requirement
+	// (#20): the SQL validator is an application-layer check and cannot
+	// contain dialect functions with side effects. Data sources on engines
+	// without a read-only session mode keep application-layer validation and
+	// can opt out individually via additionalProps.enforce_read_only=false.
+	if c.Server.Mode == "release" && !c.Security.EnforceReadOnly {
+		return fmt.Errorf("security.enforce_read_only cannot be disabled in release mode: read-only session enforcement is a defense-in-depth requirement (#20)")
+	}
+
 	// The /fetch API requires a signed JWT regardless of security.enable_auth
 	// (#6), so a forgeable secret is never acceptable on the HTTP path.
 	secret := strings.TrimSpace(c.Security.JWTSecret)
