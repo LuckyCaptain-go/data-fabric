@@ -49,24 +49,27 @@ func NewConnectionPool(tokenManager *security.TokenManager, vault *security.Cred
 
 // GetConnection gets or creates a database connection for the specified data source
 func (cp *ConnectionPool) GetConnection(ctx context.Context, dataSource *model.DataSource) (*sql.DB, error) {
-	cp.mutex.RLock()
-	if db, exists := cp.pools[dataSource.ID]; exists {
-		cp.mutex.RUnlock()
-
+	if db := cp.pooledConnection(dataSource.ID); db != nil {
 		// Check if connection is still alive
 		if err := db.PingContext(ctx); err == nil {
 			return db, nil
 		}
 
 		// Connection is dead, remove and recreate
-		cp.mutex.RUnlock()
 		cp.removeConnection(dataSource.ID)
-	} else {
-		cp.mutex.RUnlock()
 	}
 
 	// Create new connection
 	return cp.createConnection(ctx, dataSource)
+}
+
+// pooledConnection returns the pooled connection for a data source, or nil if
+// there is none. It never holds the lock while the caller pings the connection.
+func (cp *ConnectionPool) pooledConnection(dataSourceID string) *sql.DB {
+	cp.mutex.RLock()
+	defer cp.mutex.RUnlock()
+
+	return cp.pools[dataSourceID]
 }
 
 // createConnection creates a new database connection pool
@@ -113,7 +116,7 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 }
 
 func (d *ConnectionPool) ApplyBatchPagination(dbType model.DatabaseType, sql string, batchSize, offset int64) (string, error) {
-	driver, err := globalDriverRegistry.GetDriver(dbType)
+	driver, err := GetDriverRegistry().GetDriver(dbType)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +134,7 @@ func (cp *ConnectionPool) openDatabase(dbType model.DatabaseType, dsn string) (*
 
 // getConnectUrl builds the connection string for the specified database type and configuration
 func (cp *ConnectionPool) getConnectUrl(dbType model.DatabaseType, config *model.DataSourceConfig) (string, error) {
-	driver, err := globalDriverRegistry.GetDriver(dbType)
+	driver, err := GetDriverRegistry().GetDriver(dbType)
 	if err != nil {
 		return "", err
 	}

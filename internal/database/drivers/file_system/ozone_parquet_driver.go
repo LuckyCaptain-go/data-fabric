@@ -15,9 +15,13 @@ type OzoneParquetDriver struct {
 	client *OzoneClient
 }
 
+// ApplyBatchPagination adds pagination to SQL query
+//
+// Ozone Parquet files are read as files rather than queried through a SQL
+// engine, so there is no LIMIT/OFFSET to push into the source and the query is
+// returned as-is. This used to be an unimplemented stub that panicked.
 func (d *OzoneParquetDriver) ApplyBatchPagination(sql string, batchSize, offset int64) (string, error) {
-	//TODO implement me
-	panic("implement me")
+	return sql, nil
 }
 
 // NewOzoneParquetDriver creates a new Ozone Parquet driver

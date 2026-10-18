@@ -15,9 +15,13 @@ type OzoneTextDriver struct {
 	client *OzoneClient
 }
 
+// ApplyBatchPagination adds pagination to SQL query
+//
+// Ozone text files are read as files rather than queried through a SQL engine,
+// so there is no LIMIT/OFFSET to push into the source and the query is returned
+// as-is. This used to be an unimplemented stub that panicked.
 func (d *OzoneTextDriver) ApplyBatchPagination(sql string, batchSize, offset int64) (string, error) {
-	//TODO implement me
-	panic("implement me")
+	return sql, nil
 }
 
 // NewOzoneTextDriver creates a new Ozone text driver

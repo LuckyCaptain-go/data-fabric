@@ -556,7 +556,7 @@ func (qs *queryService) FetchNextBatch(ctx context.Context, queryID, slug, token
 	}
 
 	// Check if this is the last batch
-	if session.FetchedRows < session.TotalRows {
+	if batchHasMoreRows(session.FetchedRows, session.TotalRows, len(entries)) {
 		response.NextURI = qs.buildNextURI(session.QueryID, session.Slug, session.Token, batchSize)
 	} else {
 		qs.sessionManager.Delete(session.QueryID)
@@ -728,69 +728,46 @@ func (qs *queryService) getRowCount(ctx context.Context, db *sql.DB, sql string)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Remove ORDER BY clauses for count query as they don't affect the count
-	// Use case-insensitive regex to preserve original case of identifiers
-	countSQL := removeOrderByClause(sql)
-
-	// For complex queries with GROUP BY or DISTINCT, use subquery approach
-	upperSQL := strings.ToUpper(strings.TrimSpace(countSQL))
-	if strings.Contains(upperSQL, "GROUP BY") || strings.Contains(upperSQL, "DISTINCT") {
-		// Try standard ANSI SQL approach first (works for most databases)
-		countSQL = fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS t", countSQL)
-
-		// Execute the count query
-		var count int64
-		err := db.QueryRowContext(ctx, countSQL).Scan(&count)
-		if err != nil {
-			// If the standard approach fails, try Oracle-style approach without alias
-			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM (%s)", removeOrderByClause(sql))
-			err = db.QueryRowContext(ctx, countSQL).Scan(&count)
-			if err != nil {
-				return 0, fmt.Errorf("failed to count rows: %w", err)
-			}
-		}
-		return count, nil
-	} else {
-		// For simpler queries, replace SELECT clause with COUNT(*)
-		countSQL = replaceSelectWithCount(countSQL)
-
-		var count int64
-		err := db.QueryRowContext(ctx, countSQL).Scan(&count)
-		if err != nil {
-			return 0, fmt.Errorf("failed to count rows: %w", err)
-		}
-
-		return count, nil
-	}
+	return countRowsInQuery(ctx, db, sql)
 }
 
-// removeOrderByClause removes ORDER BY clause from SQL
-func removeOrderByClause(sql string) string {
-	// 使用正则表达式移除ORDER BY子句，但避免在括号内匹配
-	// 首先计算括号层级，然后只在最外层匹配ORDER BY
-	var parenLevel int
-	for i := 0; i < len(sql); i++ {
-		switch sql[i] {
-		case '(':
-			parenLevel++
-		case ')':
-			parenLevel--
-		default:
-			// 检查是否在最外层遇到ORDER BY
-			if parenLevel == 0 && i+8 <= len(sql) {
-				if upper := sql[i : i+8]; strings.ToUpper(upper) == "ORDER BY" {
-					// 找到ORDER BY，移除从这里开始的所有内容
-					return strings.TrimSpace(sql[:i])
-				}
-			}
-		}
-	}
-	return sql
+// buildCountSQL wraps the query in a derived table before counting it.
+//
+// The count has to be taken over the query's own result set. Rewriting the
+// SELECT list in place instead ("SELECT COUNT(*) FROM users LIMIT 5") leaves the
+// caller's LIMIT/OFFSET applying to the single aggregate row, so the count comes
+// back as the whole table. Batch pagination then believes there are more rows
+// than the query can ever return and hands out next-batch links for rows that do
+// not exist.
+func buildCountSQL(sql string) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS t", countSubquery(sql))
 }
 
-// replaceSelectWithCount replaces the SELECT clause with COUNT(*)
-func replaceSelectWithCount(sql string) string {
-	// Find the first occurrence of 'FROM' that is not within parentheses
+// buildCountSQLNoAlias is buildCountSQL without the derived-table alias, which
+// Oracle rejects.
+func buildCountSQLNoAlias(sql string) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM (%s)", countSubquery(sql))
+}
+
+// countSubquery prepares the caller's statement for use as a derived table.
+//
+// The statement is embedded as written, so it has to be legal inside parentheses.
+// A trailing statement terminator is not, and the validator only strips it from
+// the copy it parses rather than from the statement that gets executed, so it is
+// dropped here.
+func countSubquery(sql string) string {
+	return strings.TrimRight(removeOrderByClause(sql), "; \t\r\n")
+}
+
+// buildCountSQLInPlace counts a query by replacing its SELECT list with COUNT(*)
+// and keeping the rest of the statement.
+//
+// This form cannot count a query that limits its own rows, because the limit then
+// applies to the single aggregate row instead of to the result set, so it is only
+// reached for queries the derived-table forms cannot express at all.
+func buildCountSQLInPlace(sql string) string {
+	sql = countSubquery(sql)
+
 	var parenLevel int
 	for i := 0; i < len(sql); i++ {
 		switch sql[i] {
@@ -802,21 +779,107 @@ func replaceSelectWithCount(sql string) string {
 			// 检查是否在最外层遇到FROM
 			if parenLevel == 0 && i+4 <= len(sql) {
 				if upper := sql[i : i+4]; strings.ToUpper(upper) == "FROM" {
-					// 找到FROM，从这里开始构建新的查询
-					// 找到SELECT的起始位置
-					for j := 0; j <= i; j++ {
-						if j+6 <= len(sql) {
-							if upperSelect := sql[j : j+6]; strings.ToUpper(upperSelect) == "SELECT" {
-								// 替换SELECT部分为COUNT(*)
-								return "SELECT COUNT(*) " + sql[i:]
-							}
-						}
+					return "SELECT COUNT(*) " + sql[i:]
+				}
+			}
+		}
+	}
+
+	return sql
+}
+
+// countRowsInQuery counts the rows the query returns.
+//
+// The derived table is tried first because it is the only form that counts a
+// query carrying its own LIMIT/OFFSET. Not every query can be wrapped, though: a
+// result set with two columns of the same name, which is what selecting every
+// column of a join produces, is rejected by MySQL and PostgreSQL. Counting the
+// FROM clause directly works for those, so it is the last resort. The middle
+// attempt drops the derived-table alias, which Oracle rejects.
+//
+// All three failing means the statement cannot be counted at all, and the first
+// error is reported: it is the one taken against the query as the caller wrote
+// it, and it is the one that names the problem.
+func countRowsInQuery(ctx context.Context, db *sql.DB, sql string) (int64, error) {
+	var count int64
+	firstErr := db.QueryRowContext(ctx, buildCountSQL(sql)).Scan(&count)
+	if firstErr == nil {
+		return count, nil
+	}
+
+	if err := db.QueryRowContext(ctx, buildCountSQLNoAlias(sql)).Scan(&count); err == nil {
+		return count, nil
+	}
+
+	if err := db.QueryRowContext(ctx, buildCountSQLInPlace(sql)).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count rows: %w", firstErr)
+	}
+
+	return count, nil
+}
+
+// batchHasMoreRows reports whether a batch fetch should hand out another
+// next-batch link.
+//
+// An empty batch means the query is exhausted, even when the row count taken
+// earlier said otherwise: rows can disappear between batches. Continuing in that
+// case would repeat the same offset forever.
+func batchHasMoreRows(fetchedRows, totalRows int64, batchLen int) bool {
+	if batchLen == 0 {
+		return false
+	}
+
+	return fetchedRows < totalRows
+}
+
+// removeOrderByClause removes an ORDER BY clause that limits nothing from SQL
+//
+// 使用括号层级判断，只在最外层匹配ORDER BY。
+//
+// An ORDER BY that carries no row limit is dropped: it cannot change a count, and
+// some databases reject one inside a subquery. An ORDER BY that does carry a
+// limit is left alone, because the clause is followed by the rows it applies to
+// and removing it would remove them as well -- the count would then report every
+// row the table holds instead of the rows the query returns.
+func removeOrderByClause(sql string) string {
+	var parenLevel int
+	for i := 0; i < len(sql); i++ {
+		switch sql[i] {
+		case '(':
+			parenLevel++
+		case ')':
+			parenLevel--
+		default:
+			// 检查是否在最外层遇到ORDER BY
+			if parenLevel == 0 && i+8 <= len(sql) {
+				if upper := sql[i : i+8]; strings.ToUpper(upper) == "ORDER BY" {
+					if hasRowLimit(sql[i:]) {
+						return sql
 					}
+					return strings.TrimSpace(sql[:i])
 				}
 			}
 		}
 	}
 	return sql
+}
+
+// hasRowLimit reports whether a statement tail limits how many rows it returns.
+// The keywords are matched as whole words so that a column named "limit_count"
+// or "fetched_at" does not read as one.
+func hasRowLimit(sql string) bool {
+	words := strings.FieldsFunc(strings.ToUpper(sql), func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_'
+	})
+
+	for _, word := range words {
+		switch word {
+		case "LIMIT", "OFFSET", "FETCH":
+			return true
+		}
+	}
+
+	return false
 }
 
 func (qs *queryService) generateSessionID() string {

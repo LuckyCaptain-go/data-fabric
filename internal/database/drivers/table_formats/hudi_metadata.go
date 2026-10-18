@@ -3,6 +3,7 @@ package table_formats
 import (
 	"fmt"
 	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers/common"
+	"strconv"
 	"time"
 )
 
@@ -101,11 +102,45 @@ func (p *HudiMetadataParser) GetLatestCommit(commits []HudiCommit) (*HudiCommit,
 }
 
 // ParseInstantTime parses Hudi instant time string
+//
+// Hudi writes instant times as yyyyMMddHHmmssSSS (17 digits, for example
+// 20240101153045123), dropping the milliseconds for writers that only need
+// second precision.
+//
+// The previous implementation spliced the input at index 15 and parsed it with
+// a fractional-second layout. The date-time part is 14 characters, so the split
+// was one position too far: every well-formed instant time produced an
+// unparseable value, and anything shorter than 15 characters panicked on the
+// slice instead of being reported.
 func (p *HudiMetadataParser) ParseInstantTime(instantTime string) (time.Time, error) {
-	// Hudi instant time format: yyyyMMddHHmmssSSS
-	// Example: 20240101153045123
-	layout := "20060102150405.000"
-	return time.Parse(layout, instantTime[:15]+"."+instantTime[15:])
+	const (
+		layout       = "20060102150405" // yyyyMMddHHmmss
+		millisDigits = 3
+	)
+
+	if len(instantTime) != len(layout) && len(instantTime) != len(layout)+millisDigits {
+		return time.Time{}, fmt.Errorf(
+			"invalid Hudi instant time %q: want %d or %d digits",
+			instantTime, len(layout), len(layout)+millisDigits,
+		)
+	}
+
+	seconds, err := time.Parse(layout, instantTime[:len(layout)])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid Hudi instant time %q: %w", instantTime, err)
+	}
+
+	millis := instantTime[len(layout):]
+	if millis == "" {
+		return seconds, nil
+	}
+
+	value, err := strconv.Atoi(millis)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid Hudi instant time %q: %w", instantTime, err)
+	}
+
+	return seconds.Add(time.Duration(value) * time.Millisecond), nil
 }
 
 // GetTableType determines the table type

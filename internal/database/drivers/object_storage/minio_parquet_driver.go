@@ -360,13 +360,12 @@ func NewMinIOParquetReader(minioClient *MinIOClient, key string) *MinIOParquetRe
 }
 
 // Read reads Parquet file from MinIO
+//
+// There is no MinIO-backed source.ParquetFile yet, and a ParquetFileReader with
+// a nil Parquet backend panics on first use, so report the gap instead of
+// returning one.
 func (r *MinIOParquetReader) Read(ctx context.Context) (*ParquetFileReader, error) {
-	// Create Parquet reader (simplified - would use actual Parquet library)
-	// For now, return a mock reader
-	return &ParquetFileReader{
-		s3Client: nil, // MinIO doesn't use S3 client
-		key:      r.key,
-	}, nil
+	return nil, fmt.Errorf("reading Parquet files from MinIO is not implemented (key %q)", r.key)
 }
 
 // MemoryFile represents an in-memory file

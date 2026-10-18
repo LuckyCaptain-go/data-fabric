@@ -152,6 +152,10 @@ func (dtm *DataTypeMapper) mapMySQLType(columnType string, nullable bool) model.
 
 // mapPostgreSQLType maps PostgreSQL types to standard types
 func (dtm *DataTypeMapper) mapPostgreSQLType(columnType string, nullable bool) model.StandardizedType {
+	// normalizeColumnType uppercases its input, so the literals below have to be
+	// matched case-insensitively.
+	columnType = strings.ToLower(columnType)
+
 	switch {
 	case columnType == "smallint":
 		return model.TypeInteger
@@ -392,11 +396,29 @@ func (dtm *DataTypeMapper) convertToBoolean(value interface{}) (interface{}, err
 	switch v := value.(type) {
 	case bool:
 		return v, nil
-	case int, int8, int16, int32, int64:
-		return v.(int64) != 0, nil
-	case uint, uint8, uint16, uint32, uint64:
+	case int:
 		return v != 0, nil
-	case float32, float64:
+	case int8:
+		return v != 0, nil
+	case int16:
+		return v != 0, nil
+	case int32:
+		return v != 0, nil
+	case int64:
+		return v != 0, nil
+	case uint:
+		return v != 0, nil
+	case uint8:
+		return v != 0, nil
+	case uint16:
+		return v != 0, nil
+	case uint32:
+		return v != 0, nil
+	case uint64:
+		return v != 0, nil
+	case float32:
+		return v != 0, nil
+	case float64:
 		return v != 0, nil
 	case string:
 		lower := strings.ToLower(v)
