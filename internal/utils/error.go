@@ -94,6 +94,7 @@ type AppError struct {
 	Message string `json:"message"`
 	Details string `json:"details,omitempty"`
 	Cause   error  `json:"-"`
+	status  int
 }
 
 func (e *AppError) Error() string {
@@ -159,6 +160,7 @@ func (eb *ErrorBuilder) Build() *AppError {
 		Message: eb.message,
 		Details: eb.details,
 		Cause:   eb.cause,
+		status:  eb.status,
 	}
 }
 
@@ -260,6 +262,9 @@ func IsErrorType(err error, code string) bool {
 func GetErrorStatus(err error) int {
 	var appErr *AppError
 	if errors.As(err, &appErr) {
+		if appErr.status != 0 {
+			return appErr.status
+		}
 		if status, exists := HTTPStatus[appErr.Code]; exists {
 			return status
 		}
