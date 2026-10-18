@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers"
+	"github.com/RhinoLink-Tech/data-fabric/internal/database/readonly"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 	"github.com/RhinoLink-Tech/data-fabric/internal/security"
 )
@@ -27,23 +29,27 @@ func GetDriverRegistry() *DriverRegistry {
 
 // ConnectionPool manages database connections for different data sources
 type ConnectionPool struct {
-	pools        map[string]*sql.DB
-	mutex        sync.RWMutex
-	health       map[string]bool
-	healthMu     sync.RWMutex
-	tokenManager *security.TokenManager
-	vault        *security.CredentialVault
-	driverCaps   map[string]drivers.DriverCapabilities // Cached driver capabilities
+	pools           map[string]*sql.DB
+	mutex           sync.RWMutex
+	health          map[string]bool
+	healthMu        sync.RWMutex
+	tokenManager    *security.TokenManager
+	vault           *security.CredentialVault
+	driverCaps      map[string]drivers.DriverCapabilities // Cached driver capabilities
+	enforceReadOnly bool
 }
 
-// NewConnectionPool creates a new ConnectionPool instance
-func NewConnectionPool(tokenManager *security.TokenManager, vault *security.CredentialVault) *ConnectionPool {
+// NewConnectionPool creates a new ConnectionPool instance. When
+// enforceReadOnly is set, connections to engines with a read-only session
+// mode are opened read-only (#20).
+func NewConnectionPool(tokenManager *security.TokenManager, vault *security.CredentialVault, enforceReadOnly bool) *ConnectionPool {
 	return &ConnectionPool{
-		pools:        make(map[string]*sql.DB),
-		health:       make(map[string]bool),
-		tokenManager: tokenManager,
-		vault:        vault,
-		driverCaps:   make(map[string]drivers.DriverCapabilities),
+		pools:           make(map[string]*sql.DB),
+		health:          make(map[string]bool),
+		tokenManager:    tokenManager,
+		vault:           vault,
+		driverCaps:      make(map[string]drivers.DriverCapabilities),
+		enforceReadOnly: enforceReadOnly,
 	}
 }
 
@@ -87,8 +93,17 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 		return nil, fmt.Errorf("failed to get connection URL: %w", err)
 	}
 
+	// Inject the read-only session parameter where the dialect uses DSN
+	// parameters for it (#20).
+	readOnly := cp.readOnlyEnforced(dataSource)
+	if readOnly {
+		if roDSN, ok := readonly.ApplyDSN(dataSource.Type, dsn); ok {
+			dsn = roDSN
+		}
+	}
+
 	// Open database connection
-	db, err := cp.openDatabase(dataSource.Type, dsn)
+	db, err := cp.openDatabase(dataSource.Type, dsn, readOnly)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database connection: %w", err)
 	}
@@ -120,13 +135,43 @@ func (d *ConnectionPool) ApplyBatchPagination(dbType model.DatabaseType, sql str
 	return driver.ApplyBatchPagination(sql, batchSize, offset)
 }
 
-// openDatabase opens a database connection based on database type
-func (cp *ConnectionPool) openDatabase(dbType model.DatabaseType, dsn string) (*sql.DB, error) {
+// openDatabase opens a database connection based on database type. When
+// enforceReadOnly is set and the dialect initializes read-only sessions per
+// connection, the pool's driver.Open is replaced by the read-only connector
+// path so every pooled connection is covered (#20).
+func (cp *ConnectionPool) openDatabase(dbType model.DatabaseType, dsn string, enforceReadOnly bool) (*sql.DB, error) {
 	driver, err := GetDriverRegistry().GetDriver(dbType)
 	if err != nil {
 		return nil, err
 	}
+	if enforceReadOnly {
+		if db, handled, err := readonly.OpenDB(dbType, dsn); handled {
+			return db, err
+		}
+	}
 	return driver.Open(dsn)
+}
+
+// readOnlyEnforced resolves the global security.enforce_read_only flag with
+// the per-data-source override additionalProps.enforce_read_only (#20). The
+// override accepts booleans and the strings "false"/"off"/"0" (JSON gives
+// either shape).
+func (cp *ConnectionPool) readOnlyEnforced(dataSource *model.DataSource) bool {
+	if !cp.enforceReadOnly {
+		return false
+	}
+	if override, ok := dataSource.Config.AdditionalProps["enforce_read_only"]; ok {
+		switch value := override.(type) {
+		case bool:
+			return value
+		case string:
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "false", "off", "0":
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // getConnectUrl builds the connection string for the specified database type and configuration
