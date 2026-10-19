@@ -79,22 +79,22 @@ func (ss *streamingService) mapQueryEngineTypeToStandard(dbTypeName string) mode
 
 // StreamingSession represents a streaming query session for batch fetching
 type StreamingSession struct {
-	QueryID      string
-	Slug         string
-	Token        string
-	DataSourceID string
-	SQL          string
-	Type         int
-	BatchSize    int
-	Cursor       interface{} // Cursor for pagination
-	TotalRows    int64
-	FetchedRows  int64
-	Columns      []model.ColumnInfo
-	Entries      []*[]interface{}
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	mutex        sync.RWMutex
-	StreamID     string // Associated stream ID
+	QueryID          string
+	Slug             string
+	Token            string
+	DataSourceID     string
+	SQL              string
+	Type             int
+	BatchSize        int
+	Cursor           interface{} // Cursor for pagination
+	TotalRows        int64
+	FetchedRows      int64
+	Columns          []model.ColumnInfo
+	Entries          []*[]interface{}
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	continuationLock sessionContinuationLock
+	StreamID         string // Associated stream ID
 }
 
 // StreamingSessionManager manages streaming query sessions
@@ -141,6 +141,30 @@ func (sm *StreamingSessionManager) Get(queryID string) (*StreamingSession, error
 	}
 
 	return session, nil
+}
+
+// getAndLock obtains a session and serializes its continuation-token state.
+// Rechecking the map after acquiring the session lock handles concurrent
+// session expiry or deletion between the initial lookup and lock acquisition.
+func (sm *StreamingSessionManager) getAndLock(ctx context.Context, queryID string) (*StreamingSession, error) {
+	session, err := sm.Get(queryID)
+	if err != nil {
+		return nil, ErrQuerySessionUnavailable
+	}
+	if err := session.continuationLock.Lock(ctx); err != nil {
+		return nil, err
+	}
+
+	current, err := sm.Get(queryID)
+	if err != nil || current != session {
+		session.continuationLock.Unlock()
+		return nil, ErrQuerySessionUnavailable
+	}
+	return session, nil
+}
+
+func (session *StreamingSession) validateToken(slug, token string) error {
+	return validateContinuationToken(session.Slug, session.Token, slug, token)
 }
 
 // Delete removes a streaming session
@@ -742,15 +766,20 @@ func (ss *streamingService) FetchNextBatchWithStreaming(ctx context.Context, que
 	ctx, cancel := withQueryTimeout(ctx, defaultQueryTimeoutSeconds)
 	defer cancel()
 
-	// Get the streaming session
-	session, err := ss.streamingSessionManager.Get(queryID)
+	// Serialize continuation requests for a session. Reusing the same token
+	// concurrently lets the first request advance the cursor; later requests
+	// wait here and are rejected when they present the now-stale token.
+	session, err := ss.streamingSessionManager.getAndLock(ctx, queryID)
 	if err != nil {
-		return nil, ErrQuerySessionUnavailable
+		return nil, err
 	}
+	defer session.continuationLock.Unlock()
 
-	// Verify slug and token
-	if session.Slug != slug || session.Token != token {
-		return nil, ErrInvalidQuerySession
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := session.validateToken(slug, token); err != nil {
+		return nil, err
 	}
 
 	// Re-check the data source on continuation: the source may have been

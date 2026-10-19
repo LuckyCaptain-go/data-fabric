@@ -27,21 +27,21 @@ type QueryService interface {
 
 // QuerySession represents a query session for batch fetching
 type QuerySession struct {
-	QueryID      string
-	Slug         string
-	Token        string
-	DataSourceID string
-	SQL          string
-	Type         int
-	BatchSize    int
-	Cursor       interface{} // Cursor for pagination
-	TotalRows    int64
-	FetchedRows  int64
-	Columns      []model.ColumnInfo
-	Entries      []*[]interface{}
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	mutex        sync.RWMutex
+	QueryID          string
+	Slug             string
+	Token            string
+	DataSourceID     string
+	SQL              string
+	Type             int
+	BatchSize        int
+	Cursor           interface{} // Cursor for pagination
+	TotalRows        int64
+	FetchedRows      int64
+	Columns          []model.ColumnInfo
+	Entries          []*[]interface{}
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	continuationLock sessionContinuationLock
 }
 
 // SessionManager manages query sessions
@@ -502,15 +502,20 @@ func (qs *queryService) FetchNextBatch(ctx context.Context, queryID, slug, token
 	ctx, cancel := withQueryTimeout(ctx, defaultQueryTimeoutSeconds)
 	defer cancel()
 
-	// Get session
-	session, err := qs.sessionManager.Get(queryID)
+	// Serialize continuation requests for this session. The first request
+	// using a token advances the offset and rotates it; concurrent replays
+	// wait, then fail validation with the stale token.
+	session, err := qs.sessionManager.getAndLock(ctx, queryID)
 	if err != nil {
-		return nil, ErrQuerySessionUnavailable
+		return nil, err
 	}
+	defer session.continuationLock.Unlock()
 
-	// Verify slug and token
-	if session.Slug != slug || session.Token != token {
-		return nil, ErrInvalidQuerySession
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateContinuationToken(session.Slug, session.Token, slug, token); err != nil {
+		return nil, err
 	}
 
 	// Check if all data has been fetched
@@ -583,6 +588,23 @@ func (sm *SessionManager) Store(session *QuerySession) {
 	defer sm.mutex.Unlock()
 
 	sm.sessions[session.QueryID] = session
+}
+
+func (sm *SessionManager) getAndLock(ctx context.Context, queryID string) (*QuerySession, error) {
+	session, err := sm.Get(queryID)
+	if err != nil {
+		return nil, ErrQuerySessionUnavailable
+	}
+	if err := session.continuationLock.Lock(ctx); err != nil {
+		return nil, err
+	}
+
+	current, err := sm.Get(queryID)
+	if err != nil || current != session {
+		session.continuationLock.Unlock()
+		return nil, ErrQuerySessionUnavailable
+	}
+	return session, nil
 }
 
 func (sm *SessionManager) Get(queryID string) (*QuerySession, error) {

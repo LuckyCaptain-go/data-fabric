@@ -206,6 +206,7 @@ Notes:
   backend does not support streaming and `query.prefer_streaming` is `false`, the
   gateway automatically falls back to LIMIT/OFFSET continuation.
 - Streaming sessions are maintained server-side for a configurable TTL (default 30 minutes).
+- A continuation token is single-use. Requests reusing the same token are serialized: the first accepted request advances the cursor and rotates the token; later replays with the old token are rejected. Use the token returned by each successful batch.
 - Always close or exhaust the stream; the gateway will clean up expired sessions automatically.
 
 ## Fetch API - High-Performance Segmented Data Query
