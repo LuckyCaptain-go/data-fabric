@@ -76,6 +76,19 @@ data-fabric/
 └── specs/                        # Specification documents
 ```
 
+### Object-storage Parquet reads
+
+The S3 and MinIO Parquet readers use seekable object adapters with byte-range
+requests. The shared decoder maps flat primitive columns and supported Parquet
+logical annotations into the gateway schema, preserves optional values as null,
+and reports the decoded schema. Nested and repeated columns return an explicit
+unsupported-schema error.
+
+The MinIO driver's direct Query method supports column selection, equality
+filters, offset, and limit. It currently decodes the file before applying those
+operations, so it does not perform Parquet predicate or column pruning. This
+driver-level method is separate from the standard HTTP query route.
+
 ### Key Design Patterns
 
 #### 1. Driver Registry Pattern

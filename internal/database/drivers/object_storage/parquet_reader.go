@@ -31,6 +31,10 @@ func NewParquetReader(s3Client *S3Client, config *ParquetReaderConfig) *ParquetR
 		}
 	}
 
+	if config.BatchSize <= 0 {
+		config.BatchSize = 1000
+	}
+
 	return &ParquetReader{
 		s3Client: s3Client,
 		config:   config,
@@ -40,106 +44,146 @@ func NewParquetReader(s3Client *S3Client, config *ParquetReaderConfig) *ParquetR
 // ParquetFileReader wraps parquet-go reader with S3 integration
 type ParquetFileReader struct {
 	reader   *reader.ParquetReader
+	file     source.ParquetFile
+	rowsRead int64
 	s3Client *S3Client
 	key      string
 }
 
 // Read reads Parquet file from S3
 func (r *ParquetReader) Read(ctx context.Context, key string) (*ParquetFileReader, error) {
-	// Download file or use S3 seekable reader
+	if r == nil || r.s3Client == nil {
+		return nil, fmt.Errorf("S3 client is required")
+	}
+	if key == "" {
+		return nil, fmt.Errorf("Parquet object key is required")
+	}
+
+	// Download file or use S3 seekable reader.
 	s3File, err := NewS3File(r.s3Client, key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 file: %w", err)
 	}
 
-	// Create Parquet reader
-	pfReader, err := reader.NewParquetReader(s3File, nil, int64(r.config.BatchSize))
+	fileReader, err := newParquetFileReader(s3File, int64(r.config.BatchSize))
 	if err != nil {
-		s3File.Close()
+		_ = s3File.Close()
+		return nil, err
+	}
+	fileReader.s3Client = r.s3Client
+	fileReader.key = key
+	return fileReader, nil
+}
+
+func newParquetFileReader(file source.ParquetFile, batchSize int64) (*ParquetFileReader, error) {
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	parquetReader, err := reader.NewParquetReader(file, nil, batchSize)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create Parquet reader: %w", err)
 	}
-
-	// Note: xitongsys/parquet-go library doesn't have SetReadKeys method
-	// Column filtering needs to be handled differently in this library
-	if len(r.config.Columns) > 0 {
-		// This library handles column selection differently
-		// We'll need to manage column selection during read operations
+	if _, err := parquetColumns(parquetReader); err != nil {
+		parquetReader.ReadStop()
+		return nil, err
 	}
-
-	return &ParquetFileReader{
-		reader:   pfReader,
-		s3Client: r.s3Client,
-		key:      key,
-	}, nil
+	return &ParquetFileReader{reader: parquetReader, file: file}, nil
 }
 
 // ReadNumRows reads a specific number of rows from Parquet file
 func (r *ParquetFileReader) ReadNumRows(num int) ([]map[string]interface{}, error) {
-	if num <= 0 {
-		num = int(r.reader.GetNumRows())
+	if r == nil || r.reader == nil {
+		return nil, fmt.Errorf("Parquet reader is not initialized")
 	}
 
-	res := make([]map[string]interface{}, 0, num)
-	for {
-		strInterface, err := r.reader.ReadByNumber(num)
-		if err != nil || len(strInterface) == 0 {
-			break
-		}
-		// Convert each element from []interface{} to []map[string]interface{}
-		for _, item := range strInterface {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				res = append(res, itemMap)
-			} else {
-				// Handle the case where conversion fails
-				break
-			}
-		}
+	remaining := r.reader.GetNumRows() - r.rowsRead
+	if remaining <= 0 {
+		return []map[string]interface{}{}, nil
+	}
+	if num <= 0 || int64(num) > remaining {
+		num = int(remaining)
+	}
+	if num == 0 {
+		return []map[string]interface{}{}, nil
 	}
 
-	return res, nil
+	columns, err := parquetColumns(r.reader)
+	if err != nil {
+		return nil, err
+	}
+	items, err := r.reader.ReadByNumber(num)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode Parquet rows: %w", err)
+	}
+
+	rows := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		row, err := parquetRowToMap(item, columns, r.reader)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	r.rowsRead += int64(len(items))
+	return rows, nil
 }
 
 // ReadAll reads all rows from Parquet file
 func (r *ParquetFileReader) ReadAll() ([]map[string]interface{}, error) {
-	numRows := int(r.reader.GetNumRows())
-	if numRows <= 0 {
-		return []map[string]interface{}{}, nil
-	}
-
-	return r.ReadNumRows(numRows)
+	return r.ReadNumRows(0)
 }
 
 // GetSchema returns Parquet file schema
 func (r *ParquetFileReader) GetSchema() (*ParquetSchema, error) {
-	// Schema information from Parquet reader
-	schema := &ParquetSchema{
-		Columns: make([]ParquetColumn, 0),
+	if r == nil || r.reader == nil {
+		return nil, fmt.Errorf("Parquet reader is not initialized")
 	}
-
-	// Extract schema from parquet file metadata
-	// The parquet-go library doesn't expose direct access to schema in the same way
-	// This is a simplified implementation
-
-	return schema, nil
+	columns, err := parquetColumns(r.reader)
+	if err != nil {
+		return nil, err
+	}
+	return &ParquetSchema{Columns: columns}, nil
 }
 
 // GetNumRows returns the number of rows in the file
 func (r *ParquetFileReader) GetNumRows() int {
+	if r == nil || r.reader == nil {
+		return 0
+	}
 	return int(r.reader.GetNumRows())
+}
+
+// BytesRead reports bytes fetched by a reader that exposes transfer accounting.
+func (r *ParquetFileReader) BytesRead() int64 {
+	if r == nil {
+		return 0
+	}
+	if file, ok := r.file.(interface{ BytesRead() int64 }); ok {
+		return file.BytesRead()
+	}
+	return 0
 }
 
 // Close closes the Parquet reader
 func (r *ParquetFileReader) Close() error {
+	if r == nil {
+		return nil
+	}
 	if r.reader != nil {
 		r.reader.ReadStop()
+	}
+	if r.file != nil {
+		return r.file.Close()
 	}
 	return nil
 }
 
 // GetRowGroupCount returns the number of row groups
 func (r *ParquetFileReader) GetRowGroupCount() int {
-	// The parquet-go library doesn't expose direct access to row group count via PFileHandler
-	return 0
+	if r == nil || r.reader == nil || r.reader.Footer == nil {
+		return 0
+	}
+	return len(r.reader.Footer.RowGroups)
 }
 
 // ParquetSchema represents Parquet file schema
@@ -151,9 +195,12 @@ type ParquetSchema struct {
 type ParquetColumn struct {
 	Name           string
 	Type           string
+	StandardType   string
 	RepetitionType string   // REQUIRED, OPTIONAL, REPEATED
 	Path           []string // Nested path for complex types
 	LogicalType    string   // Logical type annotation (e.g., UTF8, TIMESTAMP, etc.)
+	Precision      int32
+	Scale          int32
 }
 
 // ParquetMetadata represents Parquet file metadata
@@ -323,7 +370,10 @@ func (f *S3File) Write(p []byte) (n int, err error) {
 
 // Open implements source.ParquetFile interface (needed for read operations)
 func (f *S3File) Open(name string) (source.ParquetFile, error) {
-	return nil, fmt.Errorf("open not supported for S3File")
+	if name != "" && name != f.key {
+		return nil, fmt.Errorf("external Parquet column file %q is not supported", name)
+	}
+	return NewS3File(f.s3Client, f.key)
 }
 
 // Create implements source.ParquetFile interface (needed for read operations)
