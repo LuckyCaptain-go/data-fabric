@@ -3,18 +3,19 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/database"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
+	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
 	"github.com/RhinoLink-Tech/data-fabric/internal/security"
 	"github.com/RhinoLink-Tech/data-fabric/internal/utils/sql_translator"
-
 	"github.com/google/uuid"
 )
 
@@ -24,6 +25,10 @@ type StreamingService interface {
 	//GetQueryStats(ctx context.Context) (*model.QueryStats, error)
 	FetchWithStreaming(ctx context.Context, req *model.FetchQueryRequest) (*model.FetchQueryResponse, error)
 	FetchNextBatchWithStreaming(ctx context.Context, queryID, slug, token string, batchSize int) (*model.FetchQueryResponse, error)
+	// Start cleanup using the owning server's context, and close active streams
+	// after that context ends.
+	StartCleanupRoutine(ctx context.Context, interval time.Duration)
+	Shutdown() error
 }
 
 func (ss *streamingService) translateSQLIfNeeded(sql, sourceDialect, targetDialect string) (string, error) {
@@ -111,9 +116,6 @@ func NewStreamingSessionManager() *StreamingSessionManager {
 		ttl:      30 * time.Minute, // Session TTL: 30 minutes
 	}
 
-	// Start cleanup goroutine
-	go sm.cleanupSessions()
-
 	return sm
 }
 
@@ -186,21 +188,34 @@ func (sm *StreamingSessionManager) DeleteByStreamID(streamID string) {
 	}
 }
 
-// cleanupSessions periodically removes expired sessions
-func (sm *StreamingSessionManager) cleanupSessions() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
+func (sm *StreamingSessionManager) expiredSessions(now time.Time) []*StreamingSession {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
 
-	for range ticker.C {
-		sm.mutex.Lock()
-		now := time.Now()
-		for id, session := range sm.sessions {
-			if now.After(session.ExpiresAt) {
-				delete(sm.sessions, id)
-			}
+	expired := make([]*StreamingSession, 0)
+	for _, session := range sm.sessions {
+		if now.After(session.ExpiresAt) {
+			expired = append(expired, session)
 		}
-		sm.mutex.Unlock()
 	}
+	return expired
+}
+
+func (sm *StreamingSessionManager) isCurrent(session *StreamingSession) bool {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+	return sm.sessions[session.QueryID] == session
+}
+
+func (sm *StreamingSessionManager) deleteIfCurrent(session *StreamingSession) bool {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	if sm.sessions[session.QueryID] != session {
+		return false
+	}
+	delete(sm.sessions, session.QueryID)
+	return true
 }
 
 type streamingService struct {
@@ -211,7 +226,6 @@ type streamingService struct {
 	maxStreams              int
 	streamTimeout           time.Duration
 	streamingSessionManager *StreamingSessionManager
-	cleanupCancel           context.CancelFunc
 	sqlValidator            *security.SQLValidator
 	sqlTranslator           *sql_translator.SQLTranslationManager
 }
@@ -229,6 +243,19 @@ type ActiveStream struct {
 	BytesSent      int64
 	CancelFunc     context.CancelFunc
 	mutex          sync.Mutex
+	activityMutex  sync.Mutex
+}
+
+func (stream *ActiveStream) touch(at time.Time) {
+	stream.activityMutex.Lock()
+	stream.LastActivityAt = at
+	stream.activityMutex.Unlock()
+}
+
+func (stream *ActiveStream) lastActivity() time.Time {
+	stream.activityMutex.Lock()
+	defer stream.activityMutex.Unlock()
+	return stream.LastActivityAt
 }
 
 // StreamChunk represents a chunk of streamed data
@@ -259,9 +286,6 @@ func NewStreamingService(datasourceRepo repository.DataSourceRepository, connPoo
 		sqlValidator:            security.NewSQLValidator(10000),
 		sqlTranslator:           sql_translator.NewSQLTranslationManager(true),
 	}
-	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
-	ss.cleanupCancel = stopCleanup
-	go ss.StartCleanupRoutine(cleanupCtx, time.Minute)
 	return ss
 }
 
@@ -411,6 +435,16 @@ func (ss *streamingService) FetchStreamChunk(ctx context.Context, streamID strin
 	stream.mutex.Lock()
 	defer stream.mutex.Unlock()
 
+	timeout := ss.streamTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	if time.Since(stream.lastActivity()) > timeout {
+		_ = ss.closeStreamLocked(streamID, stream)
+		return nil, fmt.Errorf("stream timed out")
+	}
+	stream.touch(time.Now())
+
 	watchStop := make(chan struct{})
 	watchDone := make(chan struct{})
 	if stream.CancelFunc != nil {
@@ -431,23 +465,18 @@ func (ss *streamingService) FetchStreamChunk(ctx context.Context, streamID strin
 	}()
 
 	if err := ctx.Err(); err != nil {
-		_ = ss.CloseStream(streamID)
+		_ = ss.closeStreamLocked(streamID, stream)
 		return nil, err
 	}
-	if time.Since(stream.LastActivityAt) > ss.streamTimeout {
-		_ = ss.CloseStream(streamID)
-		return nil, fmt.Errorf("stream timed out")
-	}
-
 	var rows [][]interface{}
 	for len(rows) < batchSize {
 		if err := ctx.Err(); err != nil {
-			_ = ss.CloseStream(streamID)
+			_ = ss.closeStreamLocked(streamID, stream)
 			return nil, err
 		}
 		if !stream.Rows.Next() {
 			if err := ctx.Err(); err != nil {
-				_ = ss.CloseStream(streamID)
+				_ = ss.closeStreamLocked(streamID, stream)
 				return nil, err
 			}
 			break
@@ -459,7 +488,7 @@ func (ss *streamingService) FetchStreamChunk(ctx context.Context, streamID strin
 			rowPointers[i] = &row[i]
 		}
 		if err := stream.Rows.Scan(rowPointers...); err != nil {
-			_ = ss.CloseStream(streamID)
+			_ = ss.closeStreamLocked(streamID, stream)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -469,19 +498,19 @@ func (ss *streamingService) FetchStreamChunk(ctx context.Context, streamID strin
 	}
 
 	if err := stream.Rows.Err(); err != nil {
-		_ = ss.CloseStream(streamID)
+		_ = ss.closeStreamLocked(streamID, stream)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		_ = ss.CloseStream(streamID)
+		_ = ss.closeStreamLocked(streamID, stream)
 		return nil, err
 	}
 
 	stream.RowsSent += int64(len(rows))
-	stream.LastActivityAt = time.Now()
+	stream.touch(time.Now())
 	return &StreamChunk{
 		StreamID: streamID,
 		ChunkID:  stream.RowsSent,
@@ -495,43 +524,90 @@ func (ss *streamingService) FetchStreamChunk(ctx context.Context, streamID strin
 	}, nil
 }
 
-// CloseStream closes an active stream
+// CloseStream closes an active stream. It cancels the query before waiting for
+// an in-flight chunk read, then serializes row closure with that read.
 func (ss *streamingService) CloseStream(streamID string) error {
-	ss.streamsMutex.Lock()
-	stream, exists := ss.activeStreams[streamID]
-	if exists {
-		delete(ss.activeStreams, streamID)
-	}
-	ss.streamsMutex.Unlock()
-	if !exists {
-		return fmt.Errorf("stream not found: %s", streamID)
+	ss.streamsMutex.RLock()
+	stream := ss.activeStreams[streamID]
+	ss.streamsMutex.RUnlock()
+	if stream == nil {
+		// Closing is idempotent so concurrent expiry, timeout, and client-close
+		// paths can safely converge on the same stream.
+		return nil
 	}
 
-	// Cancel first so query-engine adapters can send their protocol-level
-	// cancellation request before result resources are closed.
+	if stream.CancelFunc != nil {
+		stream.CancelFunc()
+	}
+	stream.mutex.Lock()
+	defer stream.mutex.Unlock()
+	return ss.closeStreamLocked(streamID, stream)
+}
+
+func (ss *streamingService) closeSessionStream(session *StreamingSession) error {
+	if session == nil {
+		return nil
+	}
+	if err := ss.CloseStream(session.StreamID); err != nil {
+		log.Printf("stream session cleanup failed for session %s (stream %s): %v", session.QueryID, session.StreamID, err)
+		return err
+	}
+	if ss.streamingSessionManager != nil {
+		ss.streamingSessionManager.Delete(session.QueryID)
+	}
+	return nil
+}
+
+// closeStreamLocked requires stream.mutex and keeps the session addressable
+// until the underlying SQL rows have been closed successfully.
+func (ss *streamingService) closeStreamLocked(streamID string, stream *ActiveStream) error {
+	ss.streamsMutex.RLock()
+	current := ss.activeStreams[streamID]
+	ss.streamsMutex.RUnlock()
+	if current != stream {
+		return nil
+	}
+
 	if stream.CancelFunc != nil {
 		stream.CancelFunc()
 	}
 	if stream.Rows != nil {
-		_ = stream.Rows.Close()
+		if err := stream.Rows.Close(); err != nil {
+			return fmt.Errorf("close stream %s rows: %w", streamID, err)
+		}
 	}
+
+	ss.streamsMutex.Lock()
+	if ss.activeStreams[streamID] == stream {
+		delete(ss.activeStreams, streamID)
+	}
+	ss.streamsMutex.Unlock()
+
 	if ss.streamingSessionManager != nil {
 		ss.streamingSessionManager.DeleteByStreamID(streamID)
 	}
 	return nil
 }
 
-// GetStreamStatus returns the status of an active stream
+// GetStreamStatus returns the status of an active stream.
 func (ss *streamingService) GetStreamStatus(streamID string) (*ActiveStream, error) {
 	ss.streamsMutex.RLock()
-	defer ss.streamsMutex.RUnlock()
-
-	stream, exists := ss.activeStreams[streamID]
-	if !exists {
+	stream := ss.activeStreams[streamID]
+	ss.streamsMutex.RUnlock()
+	if stream == nil {
 		return nil, fmt.Errorf("stream not found: %s", streamID)
 	}
 
-	// Return a copy to avoid race conditions
+	stream.mutex.Lock()
+	defer stream.mutex.Unlock()
+	ss.streamsMutex.RLock()
+	current := ss.activeStreams[streamID]
+	ss.streamsMutex.RUnlock()
+	if current != stream {
+		return nil, fmt.Errorf("stream not found: %s", streamID)
+	}
+
+	// Return a copy to avoid exposing mutable stream state.
 	return &ActiveStream{
 		ID:             stream.ID,
 		DataSourceID:   stream.DataSourceID,
@@ -557,35 +633,112 @@ func (ss *streamingService) GetAllStreams() []*ActiveStream {
 	return streams
 }
 
-// CleanupInactiveStreams removes streams that have been inactive
+// CleanupInactiveStreams closes streams that have exceeded their idle timeout.
 func (ss *streamingService) CleanupInactiveStreams() int {
-	ss.streamsMutex.Lock()
-	now := time.Now()
-	var expired []*ActiveStream
-	for streamID, stream := range ss.activeStreams {
-		if now.Sub(stream.LastActivityAt) > ss.streamTimeout {
-			delete(ss.activeStreams, streamID)
-			expired = append(expired, stream)
-		}
+	timeout := ss.streamTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
 	}
-	ss.streamsMutex.Unlock()
+	cutoff := time.Now().Add(-timeout)
 
-	for _, stream := range expired {
-		if stream.CancelFunc != nil {
+	ss.streamsMutex.RLock()
+	streams := make(map[string]*ActiveStream, len(ss.activeStreams))
+	for id, stream := range ss.activeStreams {
+		streams[id] = stream
+	}
+	ss.streamsMutex.RUnlock()
+
+	cleaned := 0
+	for id, stream := range streams {
+		stream.activityMutex.Lock()
+		expired := stream.LastActivityAt.Before(cutoff)
+		if expired && stream.CancelFunc != nil {
 			stream.CancelFunc()
 		}
-		if stream.Rows != nil {
-			_ = stream.Rows.Close()
+		stream.activityMutex.Unlock()
+		if !expired {
+			continue
 		}
-		if ss.streamingSessionManager != nil {
-			ss.streamingSessionManager.DeleteByStreamID(stream.ID)
+
+		stream.mutex.Lock()
+		if !stream.lastActivity().Before(cutoff) {
+			stream.mutex.Unlock()
+			continue
 		}
+		err := ss.closeStreamLocked(id, stream)
+		stream.mutex.Unlock()
+		if err != nil {
+			log.Printf("stream cleanup failed for inactive stream %s: %v", id, err)
+			continue
+		}
+		cleaned++
 	}
-	return len(expired)
+	return cleaned
 }
 
-// StartCleanupRoutine starts a background routine to clean up inactive streams
+// CleanupExpiredSessions closes each expired stream before removing its session.
+// The per-session lock prevents cleanup from racing with continuation requests.
+func (ss *streamingService) CleanupExpiredSessions(ctx context.Context) int {
+	if ss.streamingSessionManager == nil {
+		return 0
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	candidates := ss.streamingSessionManager.expiredSessions(time.Now())
+	cleaned := 0
+	for _, session := range candidates {
+		if session.StreamID != "" {
+			// Cancel first so a fetch blocked in Rows.Next can release the
+			// continuation and stream locks before cleanup waits for them.
+			ss.cancelStream(session.StreamID)
+		}
+
+		lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := session.continuationLock.Lock(lockCtx)
+		cancel()
+		if err != nil {
+			log.Printf("stream session cleanup failed for expired session %s: waiting for continuation: %v", session.QueryID, err)
+			continue
+		}
+
+		if !ss.streamingSessionManager.isCurrent(session) || !time.Now().After(session.ExpiresAt) {
+			session.continuationLock.Unlock()
+			continue
+		}
+		if session.StreamID != "" {
+			if err := ss.CloseStream(session.StreamID); err != nil {
+				log.Printf("stream session cleanup failed for expired session %s (stream %s): %v", session.QueryID, session.StreamID, err)
+				session.continuationLock.Unlock()
+				continue
+			}
+		}
+		if ss.streamingSessionManager.deleteIfCurrent(session) || session.StreamID != "" {
+			cleaned++
+		}
+		session.continuationLock.Unlock()
+	}
+	return cleaned
+}
+
+func (ss *streamingService) cancelStream(streamID string) {
+	ss.streamsMutex.RLock()
+	stream := ss.activeStreams[streamID]
+	ss.streamsMutex.RUnlock()
+	if stream != nil && stream.CancelFunc != nil {
+		stream.CancelFunc()
+	}
+}
+
+// StartCleanupRoutine starts maintenance until its owning server context ends.
 func (ss *streamingService) StartCleanupRoutine(ctx context.Context, interval time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if interval <= 0 {
+		interval = time.Minute
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -594,12 +747,32 @@ func (ss *streamingService) StartCleanupRoutine(ctx context.Context, interval ti
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cleaned := ss.CleanupInactiveStreams()
-			if cleaned > 0 {
-				// Log cleanup
+			inactive := ss.CleanupInactiveStreams()
+			expired := ss.CleanupExpiredSessions(ctx)
+			if inactive > 0 || expired > 0 {
+				log.Printf("stream maintenance closed %d inactive streams and expired %d sessions", inactive, expired)
 			}
 		}
 	}
+}
+
+// Shutdown closes all active streams after maintenance has stopped.
+func (ss *streamingService) Shutdown() error {
+	ss.streamsMutex.RLock()
+	ids := make([]string, 0, len(ss.activeStreams))
+	for id := range ss.activeStreams {
+		ids = append(ids, id)
+	}
+	ss.streamsMutex.RUnlock()
+
+	var closeErrors []error
+	for _, id := range ids {
+		if err := ss.CloseStream(id); err != nil {
+			log.Printf("stream shutdown cleanup failed for stream %s: %v", id, err)
+			closeErrors = append(closeErrors, err)
+		}
+	}
+	return errors.Join(closeErrors...)
 }
 
 // Helper methods
@@ -790,15 +963,14 @@ func (ss *streamingService) FetchNextBatchWithStreaming(ctx context.Context, que
 		return nil, fmt.Errorf("failed to get data source: %w", err)
 	}
 	if err := requireActiveDataSource(datasource); err != nil {
-		_ = ss.CloseStream(session.StreamID)
-		ss.streamingSessionManager.Delete(queryID)
+		_ = ss.closeSessionStream(session)
 		return nil, err
 	}
 
 	// Check if stream exists and is valid
 	_, err = ss.GetStreamStatus(session.StreamID)
 	if err != nil {
-		ss.streamingSessionManager.Delete(queryID)
+		_ = ss.closeSessionStream(session)
 		return nil, ErrQuerySessionUnavailable
 	}
 
@@ -806,16 +978,14 @@ func (ss *streamingService) FetchNextBatchWithStreaming(ctx context.Context, que
 	// engine query and releases its cursor.
 	chunk, err := ss.FetchStreamChunk(ctx, session.StreamID, batchSize)
 	if err != nil {
-		_ = ss.CloseStream(session.StreamID)
-		ss.streamingSessionManager.Delete(queryID)
+		_ = ss.closeSessionStream(session)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("failed to fetch stream chunk: %w", err)
 	}
 	if ctx.Err() != nil {
-		_ = ss.CloseStream(session.StreamID)
-		ss.streamingSessionManager.Delete(queryID)
+		_ = ss.closeSessionStream(session)
 		return nil, ctx.Err()
 	}
 
@@ -872,8 +1042,7 @@ func (ss *streamingService) FetchNextBatchWithStreaming(ctx context.Context, que
 		response.NextURI = ss.buildNextURI(session.QueryID, session.Slug, session.Token, batchSize)
 	} else {
 		// Close the stream if no more results
-		ss.CloseStream(session.StreamID)
-		ss.streamingSessionManager.Delete(session.QueryID)
+		_ = ss.closeSessionStream(session)
 	}
 
 	return response, nil

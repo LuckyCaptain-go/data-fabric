@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Documented current release automation and the container packaging limitation.
 
 ### Fixed
+- Close expired streaming SQL rows before evicting their sessions; bind cleanup and shutdown to the HTTP/MCP service lifecycle and log close failures.
 - Preserve application error codes and HTTP statuses when errors are wrapped with additional context.
 - Honour the HTTP status set with `ErrorBuilder.WithStatus`: `GetErrorStatus` now returns it instead of always deriving the status from the error code.
 
