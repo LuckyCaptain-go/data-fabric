@@ -16,10 +16,13 @@ import (
 )
 
 type dataSourceControllerServiceStub struct {
-	dataSource *model.DataSource
-	createErr  error
-	getErr     error
-	updateErr  error
+	dataSource    *model.DataSource
+	createErr     error
+	getErr        error
+	updateErr     error
+	deleteErr     error
+	activateErr   error
+	deactivateErr error
 }
 
 func (s *dataSourceControllerServiceStub) CreateDataSource(context.Context, *service.CreateDataSourceRequest) (*model.DataSource, error) {
@@ -39,12 +42,14 @@ func (s *dataSourceControllerServiceStub) ListDataSources(context.Context, *serv
 func (s *dataSourceControllerServiceStub) UpdateDataSource(context.Context, string, *service.UpdateDataSourceRequest) (*model.DataSource, error) {
 	return s.dataSource, s.updateErr
 }
-func (s *dataSourceControllerServiceStub) DeleteDataSource(context.Context, string) error { return nil }
+func (s *dataSourceControllerServiceStub) DeleteDataSource(context.Context, string) error {
+	return s.deleteErr
+}
 func (s *dataSourceControllerServiceStub) ActivateDataSource(context.Context, string) error {
-	return nil
+	return s.activateErr
 }
 func (s *dataSourceControllerServiceStub) DeactivateDataSource(context.Context, string) error {
-	return nil
+	return s.deactivateErr
 }
 func (s *dataSourceControllerServiceStub) GetDataSourceStats(context.Context) (*service.DataSourceStatsResponse, error) {
 	return &service.DataSourceStatsResponse{Total: 1}, nil

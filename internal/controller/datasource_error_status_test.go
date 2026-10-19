@@ -35,6 +35,31 @@ func TestDataSourceErrorStatusMapping(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{
+			name:       "wrapped missing source on update is a 404",
+			err:        fmt.Errorf("failed to update data source: %w", repository.ErrDataSourceNotFound),
+			body:       `{"config":{"host":"db.example.test","port":5432,"database":"analytics","username":"gateway"}}`,
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.UpdateDataSource(c) },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "wrapped missing source on delete is a 404",
+			err:        fmt.Errorf("failed to delete data source: %w", repository.ErrDataSourceNotFound),
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.DeleteDataSource(c) },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "wrapped missing source on activate is a 404",
+			err:        fmt.Errorf("failed to activate data source: %w", repository.ErrDataSourceNotFound),
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.ActivateDataSource(c) },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "wrapped missing source on deactivate is a 404",
+			err:        fmt.Errorf("failed to deactivate data source: %w", repository.ErrDataSourceNotFound),
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.DeactivateDataSource(c) },
+			wantStatus: http.StatusNotFound,
+		},
+		{
 			name:       "malformed id is a 400",
 			err:        repository.ErrInvalidUUID,
 			handler:    func(dc *DataSourceController, c *gin.Context) { dc.GetDataSource(c) },
@@ -57,7 +82,7 @@ func TestDataSourceErrorStatusMapping(t *testing.T) {
 		{
 			name:       "invalid data-source config on update is a 400",
 			err:        service.ErrInvalidDataSourceConfig,
-			body:       `{"config":{"host":"db.example.test","database":"analytics","username":"gateway"}}`,
+			body:       `{"config":{"host":"db.example.test","port":5432,"database":"analytics","username":"gateway"}}`,
 			handler:    func(dc *DataSourceController, c *gin.Context) { dc.UpdateDataSource(c) },
 			wantStatus: http.StatusBadRequest,
 		},
@@ -72,9 +97,12 @@ func TestDataSourceErrorStatusMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			controller := NewDataSourceController(&dataSourceControllerServiceStub{
-				createErr: tt.err,
-				getErr:    tt.err,
-				updateErr: tt.err,
+				createErr:     tt.err,
+				getErr:        tt.err,
+				updateErr:     tt.err,
+				deleteErr:     tt.err,
+				activateErr:   tt.err,
+				deactivateErr: tt.err,
 			})
 
 			recorder := httptest.NewRecorder()
