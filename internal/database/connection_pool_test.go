@@ -6,8 +6,10 @@ import (
 	sqldriver "database/sql/driver"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 )
 
@@ -129,5 +131,160 @@ func TestReadOnlyEnforced(t *testing.T) {
 				t.Errorf("readOnlyEnforced() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// pingableConn is a database/sql connection whose ping always succeeds, so a
+// pool built on it is healthy without any network.
+type pingableConn struct{}
+
+func (pingableConn) Prepare(string) (sqldriver.Stmt, error) {
+	return nil, errors.New("not implemented")
+}
+func (pingableConn) Close() error                      { return nil }
+func (pingableConn) Begin() (sqldriver.Tx, error)      { return nil, errors.New("not implemented") }
+func (pingableConn) PingContext(context.Context) error { return nil }
+
+type pingableConnector struct{}
+
+func (pingableConnector) Connect(context.Context) (sqldriver.Conn, error) { return pingableConn{}, nil }
+func (pingableConnector) Driver() sqldriver.Driver                        { return failingDriver{} }
+
+// stubPoolDriver registers a driver whose Open returns an always-healthy
+// in-memory *sql.DB, so pool lifecycle tests run without a network.
+type stubPoolDriver struct {
+	drivers.Driver
+}
+
+func (stubPoolDriver) BuildDSN(*model.DataSourceConfig) string { return "stub://" }
+func (stubPoolDriver) Open(string) (*sql.DB, error)            { return sql.OpenDB(pingableConnector{}), nil }
+
+const stubPoolTestType = model.DatabaseType("__stub_pool_test__")
+
+func stubPoolDataSource(id string) *model.DataSource {
+	return &model.DataSource{
+		ID:     id,
+		Type:   stubPoolTestType,
+		Config: model.DataSourceConfig{Host: "stub", Port: 1, Database: "stub", Username: "stub"},
+	}
+}
+
+// A pool built from a different configuration fingerprint must not be handed
+// out again: it is replaced by a pool built from the current configuration
+// (#117).
+func TestGetConnectionEvictsPoolWithStaleFingerprint(t *testing.T) {
+	GetDriverRegistry().RegisterDriver(stubPoolTestType, stubPoolDriver{})
+	pool := NewConnectionPool(nil, nil, false)
+	stale := deadDB()
+	pool.pools["ds-1"] = stale
+	pool.fingerprints["ds-1"] = "built-from-old-config"
+
+	fresh, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1"))
+	if err != nil {
+		t.Fatalf("GetConnection failed to rebuild from the current configuration: %v", err)
+	}
+	if fresh == stale {
+		t.Fatal("GetConnection handed out the pool built from the stale configuration")
+	}
+
+	pool.mutex.RLock()
+	installed, fingerprint := pool.pools["ds-1"], pool.fingerprints["ds-1"]
+	pool.mutex.RUnlock()
+	if installed != fresh {
+		t.Error("the pool built from the current configuration was not installed")
+	}
+	if want := dataSourceFingerprint(stubPoolDataSource("ds-1")); fingerprint != want {
+		t.Errorf("installed fingerprint = %q, want the current configuration fingerprint %q", fingerprint, want)
+	}
+}
+
+// An unchanged configuration reuses the installed pool instead of churning it.
+func TestGetConnectionReusesPoolWithMatchingFingerprint(t *testing.T) {
+	GetDriverRegistry().RegisterDriver(stubPoolTestType, stubPoolDriver{})
+	pool := NewConnectionPool(nil, nil, false)
+
+	first, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1"))
+	if err != nil {
+		t.Fatalf("first GetConnection failed: %v", err)
+	}
+	second, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1"))
+	if err != nil {
+		t.Fatalf("second GetConnection failed: %v", err)
+	}
+	if first != second {
+		t.Error("GetConnection rebuilt the pool although the configuration was unchanged")
+	}
+}
+
+// Concurrent connection setup for the same data source must resolve to a
+// single installed pool, with the losing duplicates closed (#119).
+func TestConcurrentGetConnectionInstallsSinglePool(t *testing.T) {
+	GetDriverRegistry().RegisterDriver(stubPoolTestType, stubPoolDriver{})
+	pool := NewConnectionPool(nil, nil, false)
+
+	const goroutines = 16
+	results := make([]*sql.DB, goroutines)
+	errs := make([]error, goroutines)
+	var start, done atomic.Int32
+	var ready sync.WaitGroup
+	ready.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer ready.Done()
+			start.Add(1)
+			// Give every goroutine a chance to be inside createConnection
+			// at the same time before any of them finishes.
+			for start.Load() < goroutines {
+			}
+			results[i], errs[i] = pool.GetConnection(context.Background(), stubPoolDataSource("ds-1"))
+			done.Add(1)
+		}(i)
+	}
+	ready.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d GetConnection failed: %v", i, err)
+		}
+	}
+	for i := 1; i < goroutines; i++ {
+		if results[i] != results[0] {
+			t.Fatalf("goroutine %d got a different pool instance; concurrent creation installed more than one", i)
+		}
+	}
+
+	pool.mutex.RLock()
+	pooled, pooledCount := pool.pools["ds-1"], len(pool.pools)
+	pool.mutex.RUnlock()
+	if pooledCount != 1 {
+		t.Errorf("pool map holds %d entries after concurrent creation, want 1", pooledCount)
+	}
+	if pooled != results[0] {
+		t.Error("the installed pool is not the one handed to callers")
+	}
+}
+
+// InvalidateDataSource drops the pooled entry, reports health as false, and is
+// idempotent for sources with no pool (#117).
+func TestInvalidateDataSourceClosesAndIsIdempotent(t *testing.T) {
+	GetDriverRegistry().RegisterDriver(stubPoolTestType, stubPoolDriver{})
+	pool := NewConnectionPool(nil, nil, false)
+
+	if _, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1")); err != nil {
+		t.Fatalf("GetConnection failed: %v", err)
+	}
+
+	if err := pool.InvalidateDataSource("ds-1"); err != nil {
+		t.Fatalf("InvalidateDataSource failed: %v", err)
+	}
+	if _, stillPooled := pool.pools["ds-1"]; stillPooled {
+		t.Error("the pool is still installed after invalidation")
+	}
+	if pool.IsHealthy("ds-1") {
+		t.Error("an invalidated data source is still reported healthy")
+	}
+
+	if err := pool.InvalidateDataSource("ds-1"); err != nil {
+		t.Errorf("second InvalidateDataSource for a pool-less source returned an error: %v", err)
 	}
 }

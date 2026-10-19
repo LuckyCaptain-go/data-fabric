@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
@@ -21,8 +22,15 @@ type DataSourceService interface {
 	GetDataSourceStats(ctx context.Context) (*DataSourceStatsResponse, error)
 }
 
+// ConnectionInvalidator closes the pooled connections of a data source. The
+// connection pool implements it; tests substitute a fake.
+type ConnectionInvalidator interface {
+	InvalidateDataSource(dataSourceID string) error
+}
+
 type dataSourceService struct {
-	repo repository.DataSourceRepository
+	repo     repository.DataSourceRepository
+	invalids ConnectionInvalidator // Optional; nil keeps the old no-op behavior
 }
 
 type CreateDataSourceRequest struct {
@@ -55,10 +63,27 @@ type DataSourceStatsResponse struct {
 	ByStatus map[model.DataSourceStatus]int64 `json:"byStatus"`
 }
 
-// NewDataSourceService creates a new instance of DataSourceService
-func NewDataSourceService(repo repository.DataSourceRepository) DataSourceService {
+// NewDataSourceService creates a new instance of DataSourceService. The
+// invalidator, when non-nil, is used to evict pooled connections whenever a
+// data source is updated, activated, deactivated or deleted (#117); it may be
+// nil for deployments that never query (registry-only).
+func NewDataSourceService(repo repository.DataSourceRepository, invalidator ConnectionInvalidator) DataSourceService {
 	return &dataSourceService{
-		repo: repo,
+		repo:     repo,
+		invalids: invalidator,
+	}
+}
+
+// invalidatePool evicts the pooled connections of a data source. It is called
+// after the repository write succeeded, so a cleanup failure must not fail
+// the already-persisted operation — it is surfaced in the log instead, while
+// the pool entry itself is dropped either way (#117).
+func (s *dataSourceService) invalidatePool(dataSourceID string) {
+	if s.invalids == nil {
+		return
+	}
+	if err := s.invalids.InvalidateDataSource(dataSourceID); err != nil {
+		log.Printf("data source %s updated but its pooled connections failed to close: %v", dataSourceID, err)
 	}
 }
 
@@ -202,6 +227,13 @@ func (s *dataSourceService) UpdateDataSource(ctx context.Context, id string, req
 		return nil, fmt.Errorf("failed to update data source: %w", err)
 	}
 
+	// Connection-relevant changes (config, status) must not keep serving from
+	// a pool built with the old settings (#117). Name-only updates don't
+	// affect connections.
+	if req.Config != nil || req.Status != nil {
+		s.invalidatePool(id)
+	}
+
 	return dataSource, nil
 }
 
@@ -214,6 +246,10 @@ func (s *dataSourceService) DeleteDataSource(ctx context.Context, id string) err
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete data source: %w", err)
 	}
+
+	// A deleted source's connections must be closed, not just unreachable
+	// through the registry (#117).
+	s.invalidatePool(id)
 
 	return nil
 }
@@ -228,6 +264,10 @@ func (s *dataSourceService) ActivateDataSource(ctx context.Context, id string) e
 		return fmt.Errorf("failed to activate data source: %w", err)
 	}
 
+	// Connections pooled before deactivation may predate configuration fixes
+	// made while the source was down; start clean (#117).
+	s.invalidatePool(id)
+
 	return nil
 }
 
@@ -240,6 +280,10 @@ func (s *dataSourceService) DeactivateDataSource(ctx context.Context, id string)
 	if err := s.repo.Deactivate(ctx, id); err != nil {
 		return fmt.Errorf("failed to deactivate data source: %w", err)
 	}
+
+	// Deactivation means the source must stop consuming database connections
+	// immediately, not just reject new queries (#117).
+	s.invalidatePool(id)
 
 	return nil
 }
