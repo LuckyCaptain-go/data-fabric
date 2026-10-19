@@ -662,10 +662,12 @@ func (qs *queryService) executeBatchQuery(ctx context.Context, dbType model.Data
 	// Build column information
 	columns := qs.buildBatchColumnInfo(columnTypes, dbType)
 
-	// Process rows
+	// Process rows. Reuse the scan destination slice across rows; only the
+	// returned row needs a fresh allocation because it remains in entries.
+	scanArgs := make([]interface{}, len(columnTypes))
 	var entries []*[]interface{}
 	for rows.Next() {
-		rowValues, err := qs.scanBatchRow(rows, len(columnTypes))
+		rowValues, err := qs.scanBatchRowWithArgs(rows, len(columnTypes), scanArgs)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("failed to scan row: %w", err)
 		}
@@ -677,12 +679,19 @@ func (qs *queryService) executeBatchQuery(ctx context.Context, dbType model.Data
 		return nil, nil, 0, fmt.Errorf("error iterating rows: %w", err)
 	}
 
-	// For total count, we need to run a separate COUNT query
+	// If the first page is not full, it contains the complete result set, so its
+	// length is already the exact total. Avoid a second database round trip for
+	// these common small-result queries. A full page is ambiguous and still
+	// needs the exact count to preserve the existing response contract.
 	var totalCount int64
 	if offset == 0 {
-		totalCount, err = qs.getRowCount(ctx, db, query)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to get row count: %w", err)
+		if batchSize > 0 && int64(len(entries)) < batchSize {
+			totalCount = int64(len(entries))
+		} else {
+			totalCount, err = qs.getRowCount(ctx, db, query)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to get row count: %w", err)
+			}
 		}
 	}
 
@@ -707,21 +716,25 @@ func (qs *queryService) buildBatchColumnInfo(columnTypes []*sql.ColumnType, dbTy
 
 // scanBatchRow scans a single row and returns string values
 func (qs *queryService) scanBatchRow(rows *sql.Rows, columnCount int) ([]interface{}, error) {
-	// Create slice of interface{} pointers for scanning
-	scanArgs := make([]interface{}, columnCount)
-	values := make([]interface{}, columnCount)
-	for i := range values {
-		scanArgs[i] = &values[i]
+	return qs.scanBatchRowWithArgs(rows, columnCount, nil)
+}
+
+// scanBatchRowWithArgs scans a row using reusable scan arguments when provided.
+func (qs *queryService) scanBatchRowWithArgs(rows *sql.Rows, columnCount int, scanArgs []interface{}) ([]interface{}, error) {
+	result := make([]interface{}, columnCount)
+	if len(scanArgs) != columnCount {
+		scanArgs = make([]interface{}, columnCount)
+	}
+	for i := range result {
+		scanArgs[i] = &result[i]
 	}
 
-	// Scan the row
 	if err := rows.Scan(scanArgs...); err != nil {
 		return nil, err
 	}
 
-	// Convert values to strings
-	result := make([]interface{}, columnCount)
-	for i, value := range values {
+	// Normalize values in place to avoid allocating an intermediate values slice.
+	for i, value := range result {
 		if value == nil {
 			result[i] = "NULL"
 		} else if b, ok := value.([]byte); ok {
