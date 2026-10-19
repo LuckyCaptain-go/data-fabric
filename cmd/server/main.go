@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/config"
@@ -143,10 +146,54 @@ func startHTTPServer(cfg *config.Config, vault *security.CredentialVault) error 
 	log.Printf("API documentation: http://localhost:%s/swagger/index.html", cfg.Server.Port)
 
 	server := newHTTPServer(":"+cfg.Server.Port, router, cfg.Server)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("failed to start server: %w", err)
+	serverCtx, stopServer := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopServer()
+
+	stopStreaming := startStreamingMaintenance(serverCtx, streamingService)
+	defer stopStreaming()
+
+	listenResult := make(chan error, 1)
+	go func() {
+		listenResult <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-listenResult:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("failed to start server: %w", err)
+		}
+		return nil
+	case <-serverCtx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownErr := server.Shutdown(shutdownCtx)
+		cancel()
+		listenErr := <-listenResult
+		if shutdownErr != nil {
+			_ = server.Close()
+			return fmt.Errorf("failed to shut down HTTP server: %w", shutdownErr)
+		}
+		if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+			return fmt.Errorf("failed to stop HTTP server: %w", listenErr)
+		}
+		return nil
 	}
-	return nil
+}
+
+func startStreamingMaintenance(parent context.Context, streamingService service.StreamingService) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		streamingService.StartCleanupRoutine(ctx, time.Minute)
+	}()
+
+	return func() {
+		cancel()
+		<-done
+		if err := streamingService.Shutdown(); err != nil {
+			log.Printf("failed to close streaming resources during shutdown: %v", err)
+		}
+	}
 }
 
 func startMCPServer(cfg *config.Config, vault *security.CredentialVault) error {
@@ -172,6 +219,9 @@ func startMCPServer(cfg *config.Config, vault *security.CredentialVault) error {
 
 	connPool := database.NewConnectionPool(security.NewTokenManager(vault), vault, cfg.Security.EnforceReadOnly)
 	streamingService := service.NewStreamingService(datasourceRepo, connPool)
+	stopStreaming := startStreamingMaintenance(context.Background(), streamingService)
+	defer stopStreaming()
+
 	paginationService := service.NewQueryService(datasourceRepo, connPool, cfg.Query.PreferStreaming)
 	queryService := unifiedservice.NewUnifiedQueryService(paginationService, streamingService, cfg)
 	mcpServer := mcp.NewMCPServer(queryService, datasourceRepo)
