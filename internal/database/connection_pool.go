@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -30,6 +33,7 @@ func GetDriverRegistry() *DriverRegistry {
 // ConnectionPool manages database connections for different data sources
 type ConnectionPool struct {
 	pools           map[string]*sql.DB
+	fingerprints    map[string]string // Config fingerprint per pooled connection (#117)
 	mutex           sync.RWMutex
 	health          map[string]bool
 	healthMu        sync.RWMutex
@@ -45,6 +49,7 @@ type ConnectionPool struct {
 func NewConnectionPool(tokenManager *security.TokenManager, vault *security.CredentialVault, enforceReadOnly bool) *ConnectionPool {
 	return &ConnectionPool{
 		pools:           make(map[string]*sql.DB),
+		fingerprints:    make(map[string]string),
 		health:          make(map[string]bool),
 		tokenManager:    tokenManager,
 		vault:           vault,
@@ -55,7 +60,9 @@ func NewConnectionPool(tokenManager *security.TokenManager, vault *security.Cred
 
 // GetConnection gets or creates a database connection for the specified data source
 func (cp *ConnectionPool) GetConnection(ctx context.Context, dataSource *model.DataSource) (*sql.DB, error) {
-	if db := cp.pooledConnection(dataSource.ID); db != nil {
+	fingerprint := dataSourceFingerprint(dataSource)
+
+	if db := cp.pooledConnectionIfCurrent(dataSource.ID, fingerprint); db != nil {
 		// Check if connection is still alive
 		if err := db.PingContext(ctx); err == nil {
 			return db, nil
@@ -63,33 +70,56 @@ func (cp *ConnectionPool) GetConnection(ctx context.Context, dataSource *model.D
 
 		// Connection is dead, remove and recreate
 		cp.removeConnection(dataSource.ID)
+	} else {
+		// Either no pool exists, or the pooled one was built from a different
+		// configuration fingerprint; drop the stale entry so the rebuild
+		// starts clean and the old connections close (#117).
+		cp.removeConnection(dataSource.ID)
 	}
 
 	// Create new connection
-	return cp.createConnection(ctx, dataSource)
+	return cp.createConnection(ctx, dataSource, fingerprint)
 }
 
-// pooledConnection returns the pooled connection for a data source, or nil if
-// there is none. It never holds the lock while the caller pings the connection.
-func (cp *ConnectionPool) pooledConnection(dataSourceID string) *sql.DB {
+// pooledConnectionIfCurrent returns the pooled connection for a data source
+// only when it was built from the current configuration fingerprint (#117).
+// It never holds the lock while the caller pings the connection.
+func (cp *ConnectionPool) pooledConnectionIfCurrent(dataSourceID, fingerprint string) *sql.DB {
 	cp.mutex.RLock()
 	defer cp.mutex.RUnlock()
 
-	return cp.pools[dataSourceID]
+	if db, exists := cp.pools[dataSourceID]; exists && cp.fingerprints[dataSourceID] == fingerprint {
+		return db
+	}
+	return nil
 }
 
-// createConnection creates a new database connection pool
-func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *model.DataSource) (*sql.DB, error) {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	// Double-check after acquiring write lock
-	if db, exists := cp.pools[dataSource.ID]; exists {
-		if err := db.PingContext(ctx); err == nil {
-			return db, nil
-		}
+// dataSourceFingerprint identifies the connection-relevant configuration of a
+// data source: type, endpoint, credentials and pool tuning (#117). Two
+// sources with the same fingerprint can share a pool; any change means the
+// pooled connections were built from stale settings and must be replaced.
+func dataSourceFingerprint(dataSource *model.DataSource) string {
+	payload, err := json.Marshal(struct {
+		Type   model.DatabaseType     `json:"type"`
+		Config model.DataSourceConfig `json:"config"`
+	}{Type: dataSource.Type, Config: dataSource.Config})
+	if err != nil {
+		// json.Marshal of this struct cannot fail in practice; fall back to a
+		// unique value so an unexpected marshal failure degrades to pool
+		// churn, never to reuse of a stale pool.
+		return fmt.Sprintf("unfingerprintable-%p", dataSource)
 	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
 
+// createConnection builds a new connection pool for the data source. All
+// network I/O — opening the database, pinging it — happens outside the global
+// pool lock so a slow or unreachable source cannot serialize pool creation
+// for unrelated data sources (#119). Concurrent creators for the same source
+// are reconciled at install time: the first pool wins, later duplicates are
+// closed so nothing leaks.
+func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *model.DataSource, fingerprint string) (*sql.DB, error) {
 	// Get connection string
 	dsn, err := cp.getConnectUrl(dataSource.Type, &dataSource.Config)
 	if err != nil {
@@ -125,8 +155,25 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Store in pool
+	// Install the pool under the write lock. A concurrent creator may have
+	// installed the same source first; the winner is kept and the duplicate
+	// closed (#119).
+	cp.mutex.Lock()
+	if existing, exists := cp.pools[dataSource.ID]; exists {
+		if cp.fingerprints[dataSource.ID] == fingerprint {
+			cp.mutex.Unlock()
+			db.Close()
+			cp.setHealth(dataSource.ID, true)
+			return existing, nil
+		}
+		// The source changed again mid-flight; the installed pool is stale.
+		delete(cp.pools, dataSource.ID)
+		delete(cp.fingerprints, dataSource.ID)
+	}
 	cp.pools[dataSource.ID] = db
+	cp.fingerprints[dataSource.ID] = fingerprint
+	cp.mutex.Unlock()
+
 	cp.setHealth(dataSource.ID, true)
 
 	return db, nil
@@ -239,42 +286,67 @@ func (cp *ConnectionPool) configureConnectionPool(db *sql.DB, config *model.Data
 
 // removeConnection removes a connection from the pool
 func (cp *ConnectionPool) removeConnection(dataSourceID string) {
+	db, existed := cp.takeConnection(dataSourceID)
+	if existed {
+		db.Close()
+	}
+}
+
+// takeConnection atomically removes a pooled connection (and its fingerprint)
+// from the map and returns it; closing happens outside the lock so teardown
+// I/O never blocks pool users (#119).
+func (cp *ConnectionPool) takeConnection(dataSourceID string) (*sql.DB, bool) {
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
-	if db, exists := cp.pools[dataSourceID]; exists {
-		db.Close()
+	db, exists := cp.pools[dataSourceID]
+	if exists {
 		delete(cp.pools, dataSourceID)
+		delete(cp.fingerprints, dataSourceID)
 		cp.setHealth(dataSourceID, false)
 	}
+	return db, exists
+}
+
+// InvalidateDataSource closes and removes the pooled connections for a data
+// source after its configuration changed or it was removed (#117). It is
+// idempotent: a source with no pooled connections is not an error. Close
+// failures are surfaced so callers can log them instead of leaking them
+// silently; the pool entry is dropped either way so stale connections are
+// never handed out again.
+func (cp *ConnectionPool) InvalidateDataSource(dataSourceID string) error {
+	db, existed := cp.takeConnection(dataSourceID)
+	if !existed {
+		return nil
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("failed to close pooled connections for data source %s: %w", dataSourceID, err)
+	}
+	return nil
 }
 
 // CloseConnection closes a specific connection and removes it from the pool
 func (cp *ConnectionPool) CloseConnection(dataSourceID string) error {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	if db, exists := cp.pools[dataSourceID]; exists {
-		err := db.Close()
-		delete(cp.pools, dataSourceID)
-		cp.setHealth(dataSourceID, false)
-		return err
+	db, existed := cp.takeConnection(dataSourceID)
+	if !existed {
+		return fmt.Errorf("connection not found for data source: %s", dataSourceID)
 	}
-
-	return fmt.Errorf("connection not found for data source: %s", dataSourceID)
+	return db.Close()
 }
 
 // CloseAll closes all connections in the pool
 func (cp *ConnectionPool) CloseAll() error {
 	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
+	closing := cp.pools
+	cp.pools = make(map[string]*sql.DB)
+	cp.fingerprints = make(map[string]string)
+	cp.mutex.Unlock()
 
 	var lastErr error
-	for id, db := range cp.pools {
+	for id, db := range closing {
 		if err := db.Close(); err != nil {
 			lastErr = err
 		}
-		delete(cp.pools, id)
 		cp.setHealth(id, false)
 	}
 
