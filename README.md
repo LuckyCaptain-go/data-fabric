@@ -1,8 +1,8 @@
-# Data Fabric — A Lightweight Gateway for Heterogeneous Data
+# Data Fabric — Lightweight AI Data Access Gateway
 
 <div align="center">
   <img src="assets/data-fabric-icon.png" alt="Data Fabric logo" width="160">
-  <p><strong>One lightweight gateway for many data sources. One SQL language for common queries.</strong></p>
+  <p><strong>Connect AI applications to many data sources through one lightweight gateway and a shared SQL interface.</strong></p>
   <p><a href="README_zh.md">简体中文</a></p>
   <p>
     <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?logo=go" alt="Go 1.26.1+">
@@ -13,9 +13,18 @@
 
 ⭐ [Star Data Fabric](https://github.com/RhinoLink-Tech/data-fabric) · 🚀 [Quick Start](#quick-start) · 🤝 [Contribute](CONTRIBUTING.md)
 
-Do your applications still integrate every database, warehouse, lake, object store, and file source separately—each with its own connection setup, SQL differences, and result handling?
+Are you building an AI agent, RAG workflow, or AI analytics feature that needs context from several enterprise data systems? Every separate connector, credential model, SQL dialect, and result format adds integration work to your AI application.
 
-Data Fabric puts those sources behind one lightweight, self-hosted gateway. Teams manage connections in one place, while applications use a consistent API and SQL entry point to query registered sources. Supported SQL syntax can be adapted to the target source, reducing the per-source integration work in every application.
+Data Fabric gives AI applications a lightweight, self-hosted data-access layer for heterogeneous sources. Teams manage connections in one place, while applications query registered sources through a shared API and SQL interface. It connects AI workloads to existing data systems without taking over model inference or AI orchestration.
+
+## AI Application Scenarios
+
+- **AI agents:** Optional MCP tools let trusted local clients discover sources, validate read-only SQL, execute queries, and fetch result batches. See the [MCP guide](MCP_SERVER.md).
+- **RAG retrieval:** Retrieve structured and semi-structured records from databases, warehouses, object storage, and supported file sources. The RAG application remains responsible for chunking, embeddings, vector storage, and ranking.
+- **Text-to-SQL:** Route model-generated read-only queries through a common API and translate supported SQL syntax for the selected source.
+- **AI analytics:** Give assistants a unified way to access registered sources; connect a federation engine when a use case needs cross-source SQL.
+
+Data Fabric provides the data-access layer for AI applications. Models, prompts, embedding pipelines, and vector search remain in the AI stack.
 
 ## Why Data Fabric
 
@@ -79,6 +88,10 @@ The repository defines representative source types across these categories. Avai
 | Object storage and file systems | S3, MinIO, Alibaba OSS, Tencent COS, Azure Blob, HDFS, Apache Ozone |
 | File formats | Parquet, ORC, Avro, CSV, JSON, XML, text |
 
+### Build and Runtime Footprint
+
+The standard server build compiles the registered driver implementations and their reachable dependencies into one executable. Drivers are available without installing per-source runtime plugins; connections are opened only for data sources that are configured and used. This single-binary model simplifies deployment, while the executable and build dependency footprint grow with the registered driver set.
+
 ## Quick Start
 
 ### Requirements
@@ -107,6 +120,14 @@ go run ./cmd/server
 ~~~
 
 Generate the JWT secret with openssl rand -hex 32 and the credential key with openssl rand -base64 32. Store both securely and reuse them across restarts. The service health-check endpoint is /health. See the [configuration guide](docs/configuration.md) for deployment settings, secret handling, and key rotation.
+
+## Performance Expectations
+
+Data Fabric is a query gateway, not a query accelerator. Compared with calling an engine directly, a request passes through an additional application-to-gateway network hop and gateway-side authentication, validation, routing, result normalization, and JSON encoding. Dialect conversion adds work when requested. The extra layer is proportionally more visible for short queries; engine execution and data transfer matter more for longer or larger queries.
+
+The first fetch response includes a total row count, which the current query path obtains with a separate count query at the source. For joins, aggregations, or large datasets, this count can add significant source-engine work and may affect latency more than gateway processing.
+
+There is no workload-independent percentage for this overhead. Measure direct and gateway paths with the same engine, SQL, data, network, connection state, result size, and row-count behavior; compare latency percentiles, throughput, and CPU/memory use before quoting a number.
 
 ## API Overview
 
