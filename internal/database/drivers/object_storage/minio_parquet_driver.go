@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"reflect"
+	"time"
+
 	"github.com/RhinoLink-Tech/data-fabric/internal/database/drivers"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
-	"io"
-	"time"
 )
 
 // MinIOParquetDriver implements Driver interface for querying Parquet files on MinIO
@@ -27,6 +29,9 @@ type MinIOParquetDriverConfig struct {
 
 // NewMinIOParquetDriver creates a new MinIO Parquet driver
 func NewMinIOParquetDriver(ctx context.Context, config *MinIOParquetDriverConfig) (*MinIOParquetDriver, error) {
+	if config == nil || config.MinIOConfig == nil {
+		return nil, fmt.Errorf("MinIO Parquet configuration is required")
+	}
 	minioClient, err := NewMinIOClient(ctx, config.MinIOConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MinIO client: %w", err)
@@ -83,6 +88,9 @@ func (d *MinIOParquetDriver) TestConnection(db *sql.DB) error {
 
 // TestConnectionContext tests the MinIO connection
 func (d *MinIOParquetDriver) TestConnectionContext(ctx context.Context) error {
+	if d == nil || d.minioClient == nil {
+		return fmt.Errorf("MinIO Parquet driver is not initialized")
+	}
 	// Try to check bucket existence
 	_, err := d.minioClient.BucketExists(ctx, d.minioClient.bucket)
 	if err != nil {
@@ -109,7 +117,7 @@ func (d *MinIOParquetDriver) GetCapabilities() drivers.DriverCapabilities {
 		SupportsSchemaDiscovery: true,
 		SupportsTimeTravel:      false,
 		RequiresTokenRotation:   false,
-		SupportsStreaming:       true,
+		SupportsStreaming:       false,
 	}
 }
 
@@ -124,19 +132,47 @@ func (d *MinIOParquetDriver) ConfigureAuth(authConfig interface{}) error {
 
 // Query executes a query against Parquet files on MinIO
 func (d *MinIOParquetDriver) Query(ctx context.Context, query *MinIOParquetQuery) (*MinIOParquetResult, error) {
+	if query == nil {
+		return nil, fmt.Errorf("MinIO Parquet query is required")
+	}
+	if d == nil || d.minioClient == nil {
+		return nil, fmt.Errorf("MinIO Parquet driver is not initialized")
+	}
 	if query.Key == "" {
 		return nil, fmt.Errorf("Parquet file key is required")
 	}
 
 	// Create a seekable reader for the Parquet file
 	reader := NewMinIOParquetReader(d.minioClient, query.Key)
+	if d.config != nil && d.config.BatchSize > 0 {
+		reader.batchSize = int64(d.config.BatchSize)
+	}
 
-	// Read all rows (simplified - would use pagination in production)
 	fileReader, err := reader.Read(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Parquet file: %w", err)
 	}
 	defer fileReader.Close()
+
+	schema, err := fileReader.GetSchema()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Parquet schema: %w", err)
+	}
+	resultSchema := schema
+	if len(query.Columns) > 0 {
+		available := make(map[string]ParquetColumn, len(schema.Columns))
+		for _, column := range schema.Columns {
+			available[column.Name] = column
+		}
+		resultSchema = &ParquetSchema{Columns: make([]ParquetColumn, 0, len(query.Columns))}
+		for _, name := range query.Columns {
+			column, ok := available[name]
+			if !ok {
+				return nil, fmt.Errorf("Parquet column %q does not exist", name)
+			}
+			resultSchema.Columns = append(resultSchema.Columns, column)
+		}
+	}
 
 	rows, err := fileReader.ReadAll()
 	if err != nil {
@@ -160,10 +196,22 @@ func (d *MinIOParquetDriver) Query(ctx context.Context, query *MinIOParquetQuery
 	if query.Limit > 0 && query.Limit < len(rows) {
 		rows = rows[:query.Limit]
 	}
-
+	if len(query.Columns) > 0 {
+		projected := make([]map[string]interface{}, 0, len(rows))
+		for _, row := range rows {
+			projectedRow := make(map[string]interface{}, len(query.Columns))
+			for _, name := range query.Columns {
+				projectedRow[name] = row[name]
+			}
+			projected = append(projected, projectedRow)
+		}
+		rows = projected
+	}
 	return &MinIOParquetResult{
-		Rows:    rows,
-		NumRows: int64(len(rows)),
+		Rows:      rows,
+		Schema:    resultSchema,
+		NumRows:   int64(len(rows)),
+		BytesRead: fileReader.BytesRead(),
 	}, nil
 }
 
@@ -179,6 +227,7 @@ type MinIOParquetQuery struct {
 // MinIOParquetResult represents query results
 type MinIOParquetResult struct {
 	Rows      []map[string]interface{}
+	Schema    *ParquetSchema
 	NumRows   int64
 	BytesRead int64
 }
@@ -200,7 +249,7 @@ func (d *MinIOParquetDriver) filterRows(rows []map[string]interface{}, filters m
 func (d *MinIOParquetDriver) matchesFilters(row map[string]interface{}, filters map[string]interface{}) bool {
 	for col, expectedVal := range filters {
 		actualVal, exists := row[col]
-		if !exists || actualVal != expectedVal {
+		if !exists || !reflect.DeepEqual(actualVal, expectedVal) {
 			return false
 		}
 	}
@@ -262,6 +311,9 @@ func (d *MinIOParquetDriver) StreamQuery(ctx context.Context, key string, callba
 
 // GetSchema retrieves schema for a Parquet file
 func (d *MinIOParquetDriver) GetSchema(ctx context.Context, key string) (*ParquetSchema, error) {
+	if d == nil || d.minioClient == nil {
+		return nil, fmt.Errorf("MinIO Parquet driver is not initialized")
+	}
 	reader := NewMinIOParquetReader(d.minioClient, key)
 	fileReader, err := reader.Read(ctx)
 	if err != nil {
@@ -327,21 +379,22 @@ func (d *MinIOParquetDriver) ValidateFile(ctx context.Context, key string) error
 
 // ConvertToStandardSchema converts Parquet schema to standard schema
 func (d *MinIOParquetDriver) ConvertToStandardSchema(parquetSchema *ParquetSchema) model.TableSchema {
-	// TODO: Implement actual mapping from Parquet schema to standard schema
-	stdSchema := model.TableSchema{
-		Columns: make([]model.ColumnInfo, 0, len(parquetSchema.Columns)),
+	stdSchema := model.TableSchema{}
+	if parquetSchema == nil {
+		return stdSchema
 	}
-
+	stdSchema.Columns = make([]model.ColumnInfo, 0, len(parquetSchema.Columns))
 	for _, col := range parquetSchema.Columns {
-		stdCol := model.ColumnInfo{
-			Name: col.Name,
-			// TODO: Implement proper type mapping
-			Type:     "string",
-			Nullable: true, // Default to true
+		standardType := col.StandardType
+		if standardType == "" {
+			standardType = "unknown"
 		}
-		stdSchema.Columns = append(stdSchema.Columns, stdCol)
+		stdSchema.Columns = append(stdSchema.Columns, model.ColumnInfo{
+			Name:     col.Name,
+			Type:     model.StandardizedType(standardType),
+			Nullable: col.RepetitionType == "OPTIONAL",
+		})
 	}
-
 	return stdSchema
 }
 
@@ -349,6 +402,7 @@ func (d *MinIOParquetDriver) ConvertToStandardSchema(parquetSchema *ParquetSchem
 type MinIOParquetReader struct {
 	minioClient *MinIOClient
 	key         string
+	batchSize   int64
 }
 
 // NewMinIOParquetReader creates a new MinIO Parquet reader
@@ -356,16 +410,28 @@ func NewMinIOParquetReader(minioClient *MinIOClient, key string) *MinIOParquetRe
 	return &MinIOParquetReader{
 		minioClient: minioClient,
 		key:         key,
+		batchSize:   1000,
 	}
 }
 
-// Read reads Parquet file from MinIO
-//
-// There is no MinIO-backed source.ParquetFile yet, and a ParquetFileReader with
-// a nil Parquet backend panics on first use, so report the gap instead of
-// returning one.
+// Read opens a real Parquet reader backed by ranged MinIO object reads.
 func (r *MinIOParquetReader) Read(ctx context.Context) (*ParquetFileReader, error) {
-	return nil, fmt.Errorf("reading Parquet files from MinIO is not implemented (key %q)", r.key)
+	if r == nil || r.minioClient == nil {
+		return nil, fmt.Errorf("MinIO client is required to read Parquet files")
+	}
+	if r.key == "" {
+		return nil, fmt.Errorf("Parquet file key is required")
+	}
+	file, err := NewMinIOParquetFile(ctx, r.minioClient, r.key)
+	if err != nil {
+		return nil, err
+	}
+	fileReader, err := newParquetFileReader(file, r.batchSize)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("failed to open MinIO Parquet object %q: %w", r.key, err)
+	}
+	return fileReader, nil
 }
 
 // MemoryFile represents an in-memory file

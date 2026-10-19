@@ -50,6 +50,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
+	github.com/xitongsys/parquet-go-source v0.0.0-20200817004010-026bad9b25d0 // indirect
 )
 
 require (
