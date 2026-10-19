@@ -105,8 +105,10 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 		}
 	}
 
-	// Open database connection
-	db, err := cp.openDatabase(dataSource.Type, dsn, readOnly)
+	// Config-aware drivers can construct non-network database/sql adapters from
+	// structured source settings. This keeps secrets and object-store options out
+	// of the DSN while preserving the common query service path.
+	db, err := cp.openConfiguredDatabase(ctx, dataSource.Type, dsn, &dataSource.Config, readOnly)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database connection: %w", err)
 	}
@@ -128,6 +130,19 @@ func (cp *ConnectionPool) createConnection(ctx context.Context, dataSource *mode
 	cp.setHealth(dataSource.ID, true)
 
 	return db, nil
+}
+
+func (cp *ConnectionPool) openConfiguredDatabase(ctx context.Context, dbType model.DatabaseType, dsn string, config *model.DataSourceConfig, enforceReadOnly bool) (*sql.DB, error) {
+	driver, err := GetDriverRegistry().GetDriver(dbType)
+	if err != nil {
+		return nil, err
+	}
+	if opener, ok := driver.(interface {
+		OpenWithConfig(context.Context, *model.DataSourceConfig) (*sql.DB, error)
+	}); ok {
+		return opener.OpenWithConfig(ctx, config)
+	}
+	return cp.openDatabase(dbType, dsn, enforceReadOnly)
 }
 
 func (d *ConnectionPool) ApplyBatchPagination(dbType model.DatabaseType, sql string, batchSize, offset int64) (string, error) {

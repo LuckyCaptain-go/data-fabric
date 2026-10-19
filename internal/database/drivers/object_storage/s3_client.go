@@ -93,9 +93,9 @@ func NewS3Client(ctx context.Context, s3Config *S3Config) (*S3Client, error) {
 		})
 	}
 
-	if s3Config.DisableSSL {
+	if s3Config.ForcePathStyle {
 		clientOpts = append(clientOpts, func(o *s3.Options) {
-			o.UsePathStyle = s3Config.ForcePathStyle
+			o.UsePathStyle = true
 		})
 	}
 

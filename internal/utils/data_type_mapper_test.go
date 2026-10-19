@@ -39,6 +39,26 @@ func TestMapQueryEngineTypes(t *testing.T) {
 	}
 }
 
+func TestMapS3CSVInferredTypes(t *testing.T) {
+	mapper := NewDataTypeMapper()
+	tests := []struct {
+		columnType string
+		want       model.StandardizedType
+	}{
+		{columnType: "BIGINT", want: model.TypeBigInt},
+		{columnType: "DOUBLE", want: model.TypeDouble},
+		{columnType: "BOOLEAN", want: model.TypeBoolean},
+		{columnType: "VARCHAR", want: model.TypeString},
+	}
+	for _, tt := range tests {
+		t.Run(tt.columnType, func(t *testing.T) {
+			if got := mapper.MapToStandardType(model.DatabaseTypeS3CSV, tt.columnType, true); got != tt.want {
+				t.Errorf("MapToStandardType(s3_csv, %q) = %q, want %q", tt.columnType, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMapPostgreSQLTypes(t *testing.T) {
 	mapper := NewDataTypeMapper()
 	tests := []struct {

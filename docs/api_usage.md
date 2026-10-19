@@ -91,6 +91,56 @@ curl -X POST http://localhost:8099/api/v1/query \
   }'
 ```
 
+### Querying one S3 CSV object
+
+S3 CSV sources use the normal `/api/v1/fetch` query path. Register one bucket
+object as a table; `table_name` is optional and defaults to the object filename
+without `.csv`.
+
+```bash
+curl -X POST http://localhost:8099/api/v1/datasources \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{
+    "name": "orders-csv",
+    "type": "s3_csv",
+    "config": {
+      "host": "reports/orders.csv",
+      "port": 443,
+      "database": "analytics-bucket",
+      "username": "YOUR_ACCESS_KEY",
+      "password": "YOUR_SECRET_KEY",
+      "ssl": true,
+      "timeout": 30,
+      "additionalProps": {
+        "region": "us-east-1",
+        "object_key": "reports/orders.csv",
+        "table_name": "orders",
+        "has_header": true,
+        "delimiter": ",",
+        "skip_header_rows": 0,
+        "null_values": ["", "NULL"]
+      }
+    }
+  }'
+```
+
+For S3-compatible storage, set `additionalProps.endpoint_url` and
+`additionalProps.force_path_style` as required by that service. The access key
+and secret key use the standard `username` and `password` fields. The region
+defaults to `us-east-1` when omitted.
+
+The supported SQL subset is a single configured table with `SELECT *` or named
+columns, `WHERE` comparisons combined with `AND` (including `IN`, `LIKE`, and
+NULL checks), `ORDER BY`, and `LIMIT`/`OFFSET`. The gateway adds batch paging
+around this query for `/api/v1/fetch`; request cancellation is passed through to
+the object request and CSV scan. Joins, `OR`, grouping, and general SQL
+expressions are not supported by this file adapter.
+
+The current reader downloads the complete CSV object and materializes its rows
+before filtering and sorting. Use it for small files; large object scans should
+use a query engine designed for distributed file processing.
+
 ### Time Travel Query (Delta Lake/Iceberg/Hudi)
 
 ```bash

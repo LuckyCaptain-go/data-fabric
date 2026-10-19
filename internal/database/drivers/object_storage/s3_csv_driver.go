@@ -19,6 +19,8 @@ type S3CSVDriver struct {
 	selectHandler  *S3SelectHandler
 	schemaDetector *CSVSchemadDetector
 	config         *S3CSVDriverConfig
+	objectKey      string
+	tableName      string
 }
 
 // S3CSVDriverConfig holds S3 CSV driver configuration
@@ -121,12 +123,12 @@ func (d *S3CSVDriver) GetCategory() drivers.DriverCategory {
 // GetCapabilities returns driver capabilities
 func (d *S3CSVDriver) GetCapabilities() drivers.DriverCapabilities {
 	return drivers.DriverCapabilities{
-		SupportsSQL:             false, // Uses S3 Select SQL dialect
+		SupportsSQL:             true,
 		SupportsTransaction:     false,
 		SupportsSchemaDiscovery: true,
 		SupportsTimeTravel:      false,
 		RequiresTokenRotation:   false,
-		SupportsStreaming:       true,
+		SupportsStreaming:       false,
 	}
 }
 
@@ -137,19 +139,23 @@ func (d *S3CSVDriver) ConfigureAuth(authConfig interface{}) error {
 
 // ApplyBatchPagination applies pagination to a SQL query
 func (d *S3CSVDriver) ApplyBatchPagination(sql string, batchSize, offset int64) (string, error) {
-	// For S3 CSV files, we don't support SQL pagination directly
-	// Instead, we'll return the original SQL and let the application handle pagination
-	// since CSV files are read as complete datasets and then processed in memory
-
-	// If S3 Select API is enabled, we can use LIMIT and OFFSET clauses
-	if d.config.EnableSelectAPI {
-		// Add LIMIT and OFFSET to the SQL query
-		paginatedSQL := fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, batchSize, offset)
-		return paginatedSQL, nil
+	if batchSize <= 0 {
+		return "", fmt.Errorf("batch size must be positive")
 	}
+	query := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	// The outer query pages the complete result set, preserving an optional
+	// caller LIMIT/OFFSET inside the derived table.
+	return fmt.Sprintf("SELECT * FROM (%s) AS __data_fabric_page LIMIT %d OFFSET %d", query, batchSize, maxInt64(offset, 0)), nil
+}
 
-	// For direct CSV reading, return original SQL and handle pagination in memory
-	return sql, nil
+func maxInt64(value, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
 }
 
 // =============================================================================
@@ -214,6 +220,9 @@ func (d *S3CSVDriver) queryWithSelect(ctx context.Context, query *S3CSVQuery) (*
 
 // queryWithReader uses CSV reader
 func (d *S3CSVDriver) queryWithReader(ctx context.Context, query *S3CSVQuery) (*S3CSVResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Download CSV file
 	data, err := d.s3Client.GetObject(ctx, query.Key)
 	if err != nil {
@@ -222,8 +231,9 @@ func (d *S3CSVDriver) queryWithReader(ctx context.Context, query *S3CSVQuery) (*
 
 	reader := csv.NewReader(bytes.NewReader(data))
 	reader.Comma = d.config.Delimiter
+	reader.FieldsPerRecord = -1
 	reader.LazyQuotes = true
-	reader.ReuseRecord = true
+	reader.ReuseRecord = false
 
 	// Skip header rows
 	for i := 0; i < d.config.SkipHeaderRows; i++ {
@@ -247,6 +257,9 @@ func (d *S3CSVDriver) queryWithReader(ctx context.Context, query *S3CSVQuery) (*
 	rowCount := 0
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
@@ -276,6 +289,15 @@ func (d *S3CSVDriver) queryWithReader(ctx context.Context, query *S3CSVQuery) (*
 
 		rows = append(rows, rowMap)
 		rowCount++
+	}
+	if len(headerRow) == 0 && len(rows) > 0 {
+		for index := 1; ; index++ {
+			column := fmt.Sprintf("column_%d", index)
+			if _, exists := rows[0][column]; !exists {
+				break
+			}
+			headerRow = append(headerRow, column)
+		}
 	}
 
 	// Apply filters
@@ -444,12 +466,10 @@ func (d *S3CSVDriver) sortRows(rows []map[string]interface{}, column string, asc
 
 // compareValuesForSort compares two values for sorting
 func (d *S3CSVDriver) compareValuesForSort(a, b interface{}, ascending bool) bool {
-	// Return true if a > b (for descending) or a < b (for ascending)
-	less := d.lessThan(a, b)
 	if ascending {
-		return less
+		return d.lessThan(b, a)
 	}
-	return !less
+	return d.lessThan(a, b)
 }
 
 // lessThan compares two values

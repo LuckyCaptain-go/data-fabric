@@ -71,6 +71,8 @@ func (dtm *DataTypeMapper) MapToStandardType(dbType model.DatabaseType, dbColumn
 		return dtm.mapOracleType(normalizedType, nullable)
 	case model.DatabaseTypeTrino, model.DatabaseTypePresto, model.DatabaseTypeOpenLooKeng:
 		return dtm.mapPrestoCompatibleType(normalizedType)
+	case model.DatabaseTypeS3CSV:
+		return dtm.mapPrestoCompatibleType(normalizedType)
 	default:
 		return model.TypeUnknown
 	}

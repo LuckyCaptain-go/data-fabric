@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"net/url"
@@ -239,8 +240,18 @@ func (hc *HealthChecker) CheckDataSourceConnectivity(ctx context.Context, config
 		return result, nil
 	}
 
-	// Open connection
-	db, err := driver.Open(dsn)
+	// Config-aware sources can construct a database/sql adapter without putting
+	// object-store credentials and options into the DSN.
+	configured := false
+	var db *sql.DB
+	if opener, ok := driver.(interface {
+		OpenWithConfig(context.Context, *model.DataSourceConfig) (*sql.DB, error)
+	}); ok {
+		configured = true
+		db, err = opener.OpenWithConfig(ctx, config)
+	} else {
+		db, err = driver.Open(dsn)
+	}
 	if err != nil {
 		result.Status = "unhealthy"
 		result.Message = fmt.Sprintf("Failed to open connection: %s", redactConnectionError(err, config))
@@ -249,8 +260,13 @@ func (hc *HealthChecker) CheckDataSourceConnectivity(ctx context.Context, config
 	}
 	defer db.Close()
 
-	// Test connection
-	err = driver.TestConnection(db)
+	// Config-aware adapters validate the configured endpoint through PingContext.
+	// Legacy drivers keep their existing connectivity probe.
+	if configured {
+		err = db.PingContext(ctx)
+	} else {
+		err = driver.TestConnection(db)
+	}
 	result.Latency = time.Since(startTime)
 
 	if err != nil {
@@ -342,6 +358,9 @@ func (hc *HealthChecker) ValidateDataSourceConfiguration(config *model.DataSourc
 	// Validate based on category
 	switch category {
 	case drivers.CategoryObjectStorage:
+		if dbType == model.DatabaseTypeS3CSV {
+			return hc.validateS3CSVConfig(config)
+		}
 		// Object storage (S3, etc.) requires bucket and region
 		return hc.validateObjectStorageConfig(config, dbType)
 	case drivers.CategoryFileSystem:
@@ -387,6 +406,26 @@ func (hc *HealthChecker) validateObjectStorageConfig(config *model.DataSourceCon
 		return fmt.Errorf("region is required")
 	}
 
+	return nil
+}
+
+func (hc *HealthChecker) validateS3CSVConfig(config *model.DataSourceConfig) error {
+	if config == nil {
+		return fmt.Errorf("data source config is required")
+	}
+	if strings.TrimSpace(config.Database) == "" {
+		return fmt.Errorf("bucket name is required in database")
+	}
+	objectKey := ""
+	if value, ok := config.AdditionalProps["object_key"]; ok && value != nil {
+		objectKey = strings.TrimSpace(fmt.Sprint(value))
+	}
+	if objectKey == "" {
+		objectKey = strings.TrimSpace(config.Host)
+	}
+	if objectKey == "" {
+		return fmt.Errorf("object_key is required in additionalProps or host")
+	}
 	return nil
 }
 
