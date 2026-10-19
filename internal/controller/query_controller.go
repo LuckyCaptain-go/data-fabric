@@ -328,6 +328,9 @@ func queryFailureStatusAndCode(err error) (int, string) {
 	switch {
 	case errors.Is(err, repository.ErrDataSourceNotFound):
 		return http.StatusNotFound, "DATASOURCE_NOT_FOUND"
+	case errors.Is(err, queryservice.ErrDataSourceInactive):
+		// The source exists but its current state forbids execution (#118)
+		return http.StatusConflict, "DATASOURCE_INACTIVE"
 	case errors.Is(err, queryservice.ErrQuerySessionUnavailable), errors.Is(err, queryservice.ErrInvalidQuerySession):
 		return http.StatusNotFound, "QUERY_SESSION_UNAVAILABLE"
 	case errors.Is(err, security.ErrNotSelectQuery), errors.Is(err, security.ErrSQLInjection),

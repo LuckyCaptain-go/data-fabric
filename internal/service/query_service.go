@@ -423,6 +423,11 @@ func (qs *queryService) FetchQuery(ctx context.Context, req *model.FetchQueryReq
 		return nil, fmt.Errorf("failed to get data source: %w", err)
 	}
 
+	// Inactive or errored sources must not execute queries (#118)
+	if err := requireActiveDataSource(datasource); err != nil {
+		return nil, err
+	}
+
 	// Translate SQL if needed
 	sqlToExecute := req.SQL
 	if req.SourceDialect != "" {
@@ -520,10 +525,16 @@ func (qs *queryService) FetchNextBatch(ctx context.Context, queryID, slug, token
 		}, nil
 	}
 
-	// Get data source and connection
+	// Re-check the data source on continuation: the source may have been
+	// disabled or deleted since the session was created (#118)
 	datasource, err := qs.datasourceRepo.GetByID(ctx, session.DataSourceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get data source: %w", err)
+	}
+
+	// Inactive or errored sources must not continue fetch sessions (#118)
+	if err := requireActiveDataSource(datasource); err != nil {
+		return nil, err
 	}
 
 	conn, err := qs.connPool.GetConnection(ctx, datasource)
