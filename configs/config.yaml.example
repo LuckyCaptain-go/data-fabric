@@ -1,7 +1,9 @@
 # Data Fabric 配置模板：复制为 configs/config.yaml 后按需修改。
-# 敏感字段建议用环境变量注入，不要写进文件：
-#   DATABASE_USERNAME / DATABASE_PASSWORD / JWT_SECRET
-# 详见 docs/configuration.md 的 "Secret management" 一节。
+# 服务配置环境变量按配置路径映射：server.port -> SERVER_PORT。
+# 敏感字段建议注入环境变量，不要写进文件：
+#   DATABASE_USERNAME / DATABASE_PASSWORD / SECURITY_JWT_SECRET
+# 兼容变量：DATABASE_NAME -> database.database，JWT_SECRET -> security.jwt_secret。
+# 完整映射见 docs/configuration.md 的 "Environment Variables" 一节。
 
 server:
   port: "8099"
