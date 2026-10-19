@@ -160,6 +160,24 @@ func (c *MinIOClient) GetObject(ctx context.Context, key string) ([]byte, error)
 
 // GetObjectRange retrieves a range of bytes from an object
 func (c *MinIOClient) GetObjectRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("object range offset must not be negative")
+	}
+	if length < 0 {
+		return nil, fmt.Errorf("object range length must not be negative")
+	}
+	if length == 0 {
+		return []byte{}, nil
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	if offset > maxInt64-(length-1) {
+		return nil, fmt.Errorf("object range exceeds supported size")
+	}
+	maxInt := int64(int(^uint(0) >> 1))
+	if length > maxInt {
+		return nil, fmt.Errorf("object range length exceeds the platform limit")
+	}
+
 	opts := minio.GetObjectOptions{}
 	opts.SetRange(offset, offset+length-1)
 
@@ -170,8 +188,7 @@ func (c *MinIOClient) GetObjectRange(ctx context.Context, key string, offset, le
 	defer obj.Close()
 
 	data := make([]byte, length)
-	_, err = obj.Read(data)
-	if err != nil {
+	if _, err = io.ReadFull(obj, data); err != nil {
 		return nil, fmt.Errorf("failed to read object data: %w", err)
 	}
 
