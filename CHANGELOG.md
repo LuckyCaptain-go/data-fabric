@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - A maintainer release checklist and CI status badges across the README editions.
 
 ### Changed
+- Map all service configuration paths to uppercase underscore-separated environment variables, retaining `DATABASE_NAME` and `JWT_SECRET` compatibility aliases.
 - Replaced expired calendar phases with a stage-based roadmap and observable completion gates.
 - Documented current release automation and the container packaging limitation.
 

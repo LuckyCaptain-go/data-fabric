@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -62,14 +63,16 @@ func Load() (*Config, error) {
 	// Set default values
 	setDefaults()
 
-	// Enable environment variable support
+	// Environment variables follow the config path: uppercase each path
+	// segment and replace dots with underscores (server.read_timeout becomes
+	// SERVER_READ_TIMEOUT). Keep the historical DATABASE_NAME and JWT_SECRET
+	// spellings as aliases for their canonical keys.
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
-
-	// Secrets are injected via environment variables and take precedence
-	// over any config file value. The full key mapping is tracked in #126.
+	_ = viper.BindEnv("database.database", "DATABASE_DATABASE", "DATABASE_NAME")
 	_ = viper.BindEnv("database.username", "DATABASE_USERNAME")
 	_ = viper.BindEnv("database.password", "DATABASE_PASSWORD")
-	_ = viper.BindEnv("security.jwt_secret", "JWT_SECRET")
+	_ = viper.BindEnv("security.jwt_secret", "SECURITY_JWT_SECRET", "JWT_SECRET")
 
 	// Read config file
 	if err := viper.ReadInConfig(); err != nil {

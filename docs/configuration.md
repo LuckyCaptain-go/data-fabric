@@ -10,168 +10,100 @@ Data Fabric is configured primarily through a YAML configuration file located at
 
 ```yaml
 server:
-  port: 8099
-  mode: release  # debug, release, production
+  port: "8080"
+  mode: "debug"
   host: "0.0.0.0"
+  read_header_timeout: "10s"
+  read_timeout: "30s"
+  write_timeout: "31m"
+  idle_timeout: "120s"
+  max_request_body_bytes: 1048576
 
 database:
   host: "localhost"
-  port: 3306
-  username: "data_fabric"
-  password: "your_password"
-  database: "data_fabric"
+  port: "3306"
+  database: "gateway_db"
+  username: "gateway_user"
+  password: ""
+  ssl: "false"
 
 security:
-  jwt:
-    secret: "your-jwt-secret"
-    expiration: 24h
-  rateLimit:
-    enabled: true
-    requests: 100
-    window: 1m
-  # Open database sessions read-only where the engine supports it (#20);
-  # cannot be disabled in release mode.
+  # Required for the HTTP API; keep this in a secret manager or environment.
+  jwt_secret: ""
+  jwt_expiration: "24h"
+  rate_limit_per_minute: 60
+  rate_limit_burst: 10
+  enable_auth: true
+  enable_rate_limit: true
   enforce_read_only: true
 
 logging:
-  level: info
-  format: json
-
-drivers:
-  # Cloud warehouse credentials
-  snowflake:
-    account: "your-account"
-    warehouse: "COMPUTE_WH"
-  databricks:
-    workspace_url: "https://your-workspace.cloud.databricks.com"
-    http_path: "/sql/protocolv1/o/0/abcd-1234"
-
-  # Object storage credentials
-  aws:
-    region: "us-west-2"
-    access_key_id: "YOUR_ACCESS_KEY"
-    secret_access_key: "YOUR_SECRET_KEY"
-  azure:
-    account_name: "yourstorageaccount"
-    account_key: "your-account-key"
-
-  # Domestic database credentials
-  oceanbase:
-    mode: "mysql"  # or "oracle"
-  tidb:
-    pd_addresses: ["pd1:2379", "pd2:2379"]
+  level: "info"
+  format: "json"
 
 query:
-  # When true, the gateway prefers establishing a server-side streaming cursor
-  # for large result sets. If the backend driver doesn't support streaming and
-  # prefer_streaming is true, the query will fail. If set to false, the gateway
-  # will fall back to LIMIT/OFFSET continuation automatically when streaming
-  # is not available.
   prefer_streaming: true
+  execution_mode: "auto"
+
+mcp:
+  enabled: false
+  transport: "stdio"
 ```
+
+Copy `configs/config.yaml.example` to `configs/config.yaml` for local use. Keep real secrets out of source control.
 
 ## Configuration Sections
 
 ### Server Configuration
 
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `server.port` | String | Port on which the gateway listens | 8080 |
-| `server.mode` | String | Gin framework mode (debug/release/test) | debug |
-| `server.host` | String | Host IP address to bind to | "0.0.0.0" |
-| `server.read_header_timeout` | Duration | Maximum time to read request headers | 10s |
-| `server.read_timeout` | Duration | Maximum time to read the request, including its body | 30s |
-| `server.write_timeout` | Duration | Maximum time to write a response; longer than the 30-minute fetch limit | 31m |
-| `server.idle_timeout` | Duration | Maximum keep-alive idle time | 120s |
-| `server.max_request_body_bytes` | Integer | Maximum body size accepted by JSON API endpoints | 1048576 (1 MiB) |
+| Field | Type | Default |
+|-------|------|---------|
+| `server.port` | String | `8080` |
+| `server.mode` | String | `debug` (`debug`, `test`, or `release`) |
+| `server.host` | String | `0.0.0.0` |
+| `server.read_header_timeout` | Duration | `10s` |
+| `server.read_timeout` | Duration | `30s` |
+| `server.write_timeout` | Duration | `31m` |
+| `server.idle_timeout` | Duration | `120s` |
+| `server.max_request_body_bytes` | Integer | `1048576` (1 MiB) |
 
-The body limit returns HTTP 413 with error code `REQUEST_TOO_LARGE`. It only wraps JSON request endpoints; fetch continuation uses GET and is unaffected.
+The body limit returns HTTP 413 with error code `REQUEST_TOO_LARGE`. It wraps JSON request endpoints; fetch continuation uses GET and is unaffected.
 
 ### Database Configuration
 
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `database.host` | String | Hostname of the internal database | localhost |
-| `database.port` | Integer | Port of the internal database | 3306 |
-| `database.username` | String | Username for internal database | data_fabric |
-| `database.password` | String | Password for internal database | your_password |
-| `database.database` | String | Database name for internal database | data_fabric |
+| Field | Type | Default |
+|-------|------|---------|
+| `database.host` | String | `localhost` |
+| `database.port` | String | `3306` |
+| `database.database` | String | `gateway_db` |
+| `database.username` | String | `gateway_user` |
+| `database.password` | String | Empty |
+| `database.ssl` | String | `false` |
 
 ### Security Configuration
 
-#### JWT Settings
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `security.jwt.secret` | String | Secret key for JWT signing | your-jwt-secret |
-| `security.jwt.expiration` | Duration | Token expiration time | 24h |
+| Field | Type | Default |
+|-------|------|---------|
+| `security.jwt_secret` | String | None; required by the HTTP server |
+| `security.jwt_expiration` | Duration | `24h` |
+| `security.rate_limit_per_minute` | Integer | `60` |
+| `security.rate_limit_burst` | Integer | `10` |
+| `security.enable_auth` | Boolean | `true` |
+| `security.enable_rate_limit` | Boolean | `true` |
+| `security.enforce_read_only` | Boolean | `true` |
 
-#### Rate Limiting Settings
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `security.rateLimit.enabled` | Boolean | Enable rate limiting | true |
-| `security.rateLimit.requests` | Integer | Max requests per window | 100 |
-| `security.rateLimit.window` | Duration | Time window for rate limiting | 1m |
+In `release` mode, authentication and read-only session enforcement cannot be disabled. The fetch API always requires a valid JWT, so the HTTP server requires a non-placeholder `security.jwt_secret` of at least 32 bytes in every mode.
 
-#### Read-Only Enforcement
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `security.enforce_read_only` | Boolean | Open database sessions read-only where the engine supports it (#20); see [docs/readonly-access.md](readonly-access.md) for the engine matrix and the per-data-source opt-out | true |
+### Logging, Query, and MCP Configuration
 
-### Logging Configuration
-
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `logging.level` | String | Log level (debug/info/warn/error) | info |
-| `logging.format` | String | Log format (json/text) | json |
-
-### Query Configuration
-
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `query.prefer_streaming` | Boolean | Prefer streaming cursors for large result sets | true |
-
-## Driver-Specific Configuration
-
-### Cloud Data Warehouses
-
-#### Snowflake
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.snowflake.account` | String | Snowflake account identifier |
-| `drivers.snowflake.warehouse` | String | Snowflake warehouse name |
-
-#### Databricks
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.databricks.workspace_url` | String | Workspace URL |
-| `drivers.databricks.http_path` | String | HTTP path for SQL endpoint |
-
-### Object Storage
-
-#### AWS Credentials
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.aws.region` | String | AWS region |
-| `drivers.aws.access_key_id` | String | AWS access key ID |
-| `drivers.aws.secret_access_key` | String | AWS secret access key |
-
-#### Azure Credentials
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.azure.account_name` | String | Azure storage account name |
-| `drivers.azure.account_key` | String | Azure storage account key |
-
-### Domestic Databases
-
-#### OceanBase
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.oceanbase.mode` | String | Compatibility mode (mysql/oracle) |
-
-#### TiDB
-| Field | Type | Description |
-|-------|------|-------------|
-| `drivers.tidb.pd_addresses` | Array | List of PD addresses |
+| Field | Type | Default |
+|-------|------|---------|
+| `logging.level` | String | `info` |
+| `logging.format` | String | `json` |
+| `query.prefer_streaming` | Boolean | `true` |
+| `query.execution_mode` | String | `auto` (`auto`, `streaming`, or `pagination`) |
+| `mcp.enabled` | Boolean | `false` |
+| `mcp.transport` | String | `stdio` |
 
 ## Data-source credential encryption
 
@@ -199,7 +131,7 @@ Back up the database and key material securely before rotation. Do not put actua
 
 `configs/config.yaml` is a local, untracked file. Start from `configs/config.yaml.example` (placeholder values only) and keep real secrets out of it:
 
-1. Environment variables win over the config file for the secret fields (`DATABASE_USERNAME`, `DATABASE_PASSWORD`, `JWT_SECRET`). Prefer them in every deployment.
+1. Environment variables override YAML settings. Inject DATABASE_USERNAME, DATABASE_PASSWORD, and SECURITY_JWT_SECRET (or the compatible JWT_SECRET alias) through a secret manager in every deployment.
 2. The `.env` file is gitignored but **not loaded automatically**. To use one locally: `set -a; source .env; set +a`, or pass `--env-file` to `docker run` / `env_file` in compose.
 3. In container deployments, inject secrets through the platform's secret mechanism (Kubernetes Secret, Docker secrets) instead of baking config files into images — the published image ships `config.yaml.example` only.
 4. Calling `/api/v1/fetch` always needs a Bearer token, regardless of `security.enable_auth`. There is no token-issuing endpoint yet, so mint one yourself with the same `JWT_SECRET` (requires `pyjwt`):
@@ -208,7 +140,7 @@ Back up the database and key material securely before rotation. Do not put actua
    python3 -c "import jwt,time; print(jwt.encode({'userId':'dev','username':'dev','roles':['admin'],'iat':int(time.time()),'exp':int(time.time())+86400}, 'YOUR_JWT_SECRET', algorithm='HS256'))"
    ```
 
-   If `JWT_SECRET` is unset the server falls back to a source-code default that anyone can read — never rely on that in shared environments (#8 removes the fallback).
+   If neither SECURITY_JWT_SECRET nor its JWT_SECRET compatibility alias is set, HTTP server startup fails; there is no built-in fallback secret.
 
 ## Local development vs production
 
@@ -223,32 +155,58 @@ Startup fails closed on insecure authentication settings before the metadata dat
 
 ## Environment Variables
 
-Secret fields are injected through environment variables and take precedence over any value in the config file. These variables are honored today:
+Environment variables override YAML values. The canonical naming rule converts a config path to uppercase and replaces each dot with an underscore: `server.read_timeout` becomes `SERVER_READ_TIMEOUT`. No prefix is added.
 
-| Configuration Path | Environment Variable | Status |
-|-------------------|----------------------|--------|
-| `database.username` | `DATABASE_USERNAME` | Supported |
-| `database.password` | `DATABASE_PASSWORD` | Supported |
-| `security.jwt_secret` | `JWT_SECRET` | Supported |
+Every service-config field supports this mapping:
 
-Other overrides previously listed here (`SERVER_PORT`, `SERVER_MODE`, `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, rate-limit and query toggles) are not wired up yet; the full mapping is tracked in #126.
+| Configuration path | Canonical environment variable |
+|--------------------|-------------------------------|
+| `server.port` | `SERVER_PORT` |
+| `server.mode` | `SERVER_MODE` |
+| `server.host` | `SERVER_HOST` |
+| `server.read_header_timeout` | `SERVER_READ_HEADER_TIMEOUT` |
+| `server.read_timeout` | `SERVER_READ_TIMEOUT` |
+| `server.write_timeout` | `SERVER_WRITE_TIMEOUT` |
+| `server.idle_timeout` | `SERVER_IDLE_TIMEOUT` |
+| `server.max_request_body_bytes` | `SERVER_MAX_REQUEST_BODY_BYTES` |
+| `database.host` | `DATABASE_HOST` |
+| `database.port` | `DATABASE_PORT` |
+| `database.database` | `DATABASE_DATABASE` (`DATABASE_NAME` is a compatibility alias) |
+| `database.username` | `DATABASE_USERNAME` |
+| `database.password` | `DATABASE_PASSWORD` |
+| `database.ssl` | `DATABASE_SSL` |
+| `security.jwt_secret` | `SECURITY_JWT_SECRET` (`JWT_SECRET` is a compatibility alias) |
+| `security.jwt_expiration` | `SECURITY_JWT_EXPIRATION` |
+| `security.rate_limit_per_minute` | `SECURITY_RATE_LIMIT_PER_MINUTE` |
+| `security.rate_limit_burst` | `SECURITY_RATE_LIMIT_BURST` |
+| `security.enable_auth` | `SECURITY_ENABLE_AUTH` |
+| `security.enable_rate_limit` | `SECURITY_ENABLE_RATE_LIMIT` |
+| `security.enforce_read_only` | `SECURITY_ENFORCE_READ_ONLY` |
+| `logging.level` | `LOGGING_LEVEL` |
+| `logging.format` | `LOGGING_FORMAT` |
+| `query.prefer_streaming` | `QUERY_PREFER_STREAMING` |
+| `query.execution_mode` | `QUERY_EXECUTION_MODE` |
+| `mcp.enabled` | `MCP_ENABLED` |
+| `mcp.transport` | `MCP_TRANSPORT` |
+
+When both a canonical name and its compatibility alias are set, the canonical name takes precedence. Durations use Go duration syntax, such as `30s` or `24h`; booleans use `true` or `false`.
 
 Example:
+
 ```bash
+export SERVER_PORT=8099
+export DATABASE_HOST=postgres
+export DATABASE_NAME=data_fabric
 export DATABASE_USERNAME=data_fabric
 export DATABASE_PASSWORD=secure-password
-export JWT_SECRET=$(openssl rand -base64 32)
+export JWT_SECRET="$(openssl rand -base64 32)"
 ```
+
+`DATA_FABRIC_CREDENTIAL_ACTIVE_KEY_ID` and `DATA_FABRIC_CREDENTIAL_KEYS` configure the separate data-source credential keyring documented above; they are not fields in the Viper service configuration.
 
 ## Configuration Validation
 
-The system performs validation on startup:
-- Required fields are checked
-- Connection parameters are validated
-- Security settings are verified
-- Driver configurations are tested
-
-Any configuration errors will cause the application to exit with an informative error message.
+The HTTP server validates security settings before connecting to the metadata database. Startup fails if the JWT secret is missing, a known placeholder, or shorter than 32 bytes. Release mode also requires authentication and read-only session enforcement to remain enabled. Invalid duration or scalar values that cannot be decoded into the typed configuration are reported during configuration loading.
 
 ## Security Considerations
 

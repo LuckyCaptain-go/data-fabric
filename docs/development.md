@@ -189,8 +189,9 @@ const (
    # If you already have a local configs/config.yaml, back it up first —
    # it is no longer tracked by git.
    cp configs/config.yaml.example configs/config.yaml
-   # Edit configs/config.yaml with your settings; inject secrets via
-   # DATABASE_USERNAME / DATABASE_PASSWORD / JWT_SECRET instead of the file
+   # Edit configs/config.yaml with your settings; environment variable names
+   # use uppercase config paths (for example SERVER_PORT). Inject secrets via
+   # DATABASE_USERNAME / DATABASE_PASSWORD / SECURITY_JWT_SECRET instead.
    ```
 
 Before running the application, inject a persistent data-source credential keyring. Generate its key with openssl rand -base64 32, store it securely, and keep it unchanged across restarts:
