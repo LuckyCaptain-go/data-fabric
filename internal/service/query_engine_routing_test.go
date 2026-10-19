@@ -114,7 +114,28 @@ func TestFetchQueryRoutesFederatedRequestAndNormalizesResult(t *testing.T) {
 			foundCountQuery = true
 		}
 	}
-	if !foundFederatedQuery || !foundCountQuery {
-		t.Fatalf("coordinator did not receive federated query and count: federated=%v count=%v", foundFederatedQuery, foundCountQuery)
+	if !foundFederatedQuery || foundCountQuery {
+		t.Fatalf("partial page should return its exact count without a count query: federated=%v count=%v", foundFederatedQuery, foundCountQuery)
+	}
+
+	// A full page is ambiguous: there may be more rows, so retain the exact
+	// count query and its existing pagination behavior.
+	req.BatchSize = len(response.Entries)
+	fullPageResponse, err := queryService.FetchQuery(context.Background(), req)
+	if err != nil {
+		t.Fatalf("FetchQuery() for a full page error = %v", err)
+	}
+	if fullPageResponse.TotalCount != 2 {
+		t.Fatalf("full-page total count = %d, want 2", fullPageResponse.TotalCount)
+	}
+
+	foundCountQuery = false
+	for len(queries) > 0 {
+		if strings.Contains(strings.ToUpper(<-queries), "COUNT(*)") {
+			foundCountQuery = true
+		}
+	}
+	if !foundCountQuery {
+		t.Fatal("full page did not request an exact count")
 	}
 }
