@@ -256,6 +256,11 @@ func (ss *streamingService) ExecuteStreamQuery(ctx context.Context, req *model.Q
 		return "", 0, fmt.Errorf("failed to get data source: %w", err)
 	}
 
+	// Inactive or errored sources must not open streams (#118)
+	if err := requireActiveDataSource(dataSource); err != nil {
+		return "", 0, err
+	}
+
 	querySQL, err := ss.translateSQLIfNeeded(req.SQL, req.SourceDialect, string(dataSource.Type))
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to translate SQL: %w", err)
@@ -746,6 +751,19 @@ func (ss *streamingService) FetchNextBatchWithStreaming(ctx context.Context, que
 	// Verify slug and token
 	if session.Slug != slug || session.Token != token {
 		return nil, ErrInvalidQuerySession
+	}
+
+	// Re-check the data source on continuation: the source may have been
+	// disabled or deleted since the session was created (#118). A source that
+	// can no longer serve queries also invalidates its engine cursor.
+	datasource, err := ss.datasourceRepo.GetByID(ctx, session.DataSourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get data source: %w", err)
+	}
+	if err := requireActiveDataSource(datasource); err != nil {
+		_ = ss.CloseStream(session.StreamID)
+		ss.streamingSessionManager.Delete(queryID)
+		return nil, err
 	}
 
 	// Check if stream exists and is valid
