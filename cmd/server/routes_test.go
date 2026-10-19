@@ -170,3 +170,25 @@ func TestEnableAuthSwitchGatesOnlyManagementEndpoints(t *testing.T) {
 		t.Fatalf("auth disabled: status = %d, want %d (pre-existing open management API); body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 }
+
+func TestFetchBodyLimitLeavesGETContinuationsUnaffected(t *testing.T) {
+	router, token := newTestRouter(t, false)
+	oversizedBody := strings.Repeat("x", (1<<20)+1)
+
+	post := httptest.NewRequest(http.MethodPost, "/api/v1/fetch", strings.NewReader(oversizedBody))
+	post.Header.Set("Content-Type", "application/json")
+	post.Header.Set("Authorization", "Bearer "+token)
+	postRecorder := httptest.NewRecorder()
+	router.ServeHTTP(postRecorder, post)
+	if postRecorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized POST status = %d, want %d; body: %s", postRecorder.Code, http.StatusRequestEntityTooLarge, postRecorder.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/fetch/q/s/t", strings.NewReader(oversizedBody))
+	get.Header.Set("Authorization", "Bearer "+token)
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, get)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("GET continuation status = %d, want %d; body: %s", getRecorder.Code, http.StatusOK, getRecorder.Body.String())
+	}
+}

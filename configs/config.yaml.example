@@ -7,6 +7,12 @@ server:
   port: "8099"
   mode: "debug"  # debug, release, test
   host: "0.0.0.0"
+  # HTTP limits (#128). Fetch operations may run up to 30 minutes.
+  read_header_timeout: "10s"
+  read_timeout: "30s"
+  write_timeout: "31m"
+  idle_timeout: "120s"
+  max_request_body_bytes: 1048576
 
 database:
   host: "localhost"

@@ -17,9 +17,14 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port string `mapstructure:"port"`
-	Mode string `mapstructure:"mode"`
-	Host string `mapstructure:"host"`
+	Port                string        `mapstructure:"port"`
+	Mode                string        `mapstructure:"mode"`
+	Host                string        `mapstructure:"host"`
+	ReadHeaderTimeout   time.Duration `mapstructure:"read_header_timeout"`
+	ReadTimeout         time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout        time.Duration `mapstructure:"write_timeout"`
+	IdleTimeout         time.Duration `mapstructure:"idle_timeout"`
+	MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes"`
 }
 
 type DatabaseConfig struct {
@@ -89,6 +94,13 @@ func setDefaults() {
 	viper.SetDefault("server.port", "8080")
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("server.host", "0.0.0.0")
+	viper.SetDefault("server.read_header_timeout", 10*time.Second)
+	viper.SetDefault("server.read_timeout", 30*time.Second)
+	// Fetch queries may run for up to 30 minutes; leave room for response
+	// encoding and writing the final batch.
+	viper.SetDefault("server.write_timeout", 31*time.Minute)
+	viper.SetDefault("server.idle_timeout", 120*time.Second)
+	viper.SetDefault("server.max_request_body_bytes", int64(1<<20))
 
 	// Database defaults
 	viper.SetDefault("database.host", "localhost")

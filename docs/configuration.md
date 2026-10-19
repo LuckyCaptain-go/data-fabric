@@ -76,9 +76,16 @@ query:
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
-| `server.port` | Integer | Port on which the gateway listens | 8099 |
-| `server.mode` | String | Gin framework mode (debug/release/production) | release |
+| `server.port` | String | Port on which the gateway listens | 8080 |
+| `server.mode` | String | Gin framework mode (debug/release/test) | debug |
 | `server.host` | String | Host IP address to bind to | "0.0.0.0" |
+| `server.read_header_timeout` | Duration | Maximum time to read request headers | 10s |
+| `server.read_timeout` | Duration | Maximum time to read the request, including its body | 30s |
+| `server.write_timeout` | Duration | Maximum time to write a response; longer than the 30-minute fetch limit | 31m |
+| `server.idle_timeout` | Duration | Maximum keep-alive idle time | 120s |
+| `server.max_request_body_bytes` | Integer | Maximum body size accepted by JSON API endpoints | 1048576 (1 MiB) |
+
+The body limit returns HTTP 413 with error code `REQUEST_TOO_LARGE`. It only wraps JSON request endpoints; fetch continuation uses GET and is unaffected.
 
 ### Database Configuration
 
