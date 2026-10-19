@@ -1,10 +1,9 @@
-# Data Fabric
+# Data Fabric — A Lightweight Gateway for Heterogeneous Data
 
 <div align="center">
-  <img src="assets/data-fabric-icon.png" alt="Data Fabric 图标" width="160">
-  <h2>轻量异构数据网关：统一管理多源，用一套查询语言访问</h2>
-  <p>让应用通过统一入口管理和处理企业与集群中的多种数据源</p>
-  <p><a href="README_zh.md">完整中文介绍</a> · <a href="README_en.md">English</a></p>
+  <img src="assets/data-fabric-icon.png" alt="Data Fabric logo" width="160">
+  <p><strong>One lightweight gateway for many data sources. One SQL language for common queries.</strong></p>
+  <p><a href="README_zh.md">简体中文</a></p>
   <p>
     <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?logo=go" alt="Go 1.26.1+">
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue" alt="Apache 2.0">
@@ -12,74 +11,141 @@
   </p>
 </div>
 
-Data Fabric 面向 AI、RAG、BI 和业务应用，服务于企业与集群中的多数据源环境。它的核心目标是统一纳管数据库、数仓、湖仓、对象存储和文件源，并让应用面向一套查询语言与统一 API，减少按数据源分别处理连接方式和查询语法的工作。
+⭐ [Star Data Fabric](https://github.com/RhinoLink-Tech/data-fabric) · 🚀 [Quick Start](#quick-start) · 🤝 [Contribute](CONTRIBUTING.md)
 
-## 我们的生态位
+Do your applications still integrate every database, warehouse, lake, object store, and file source separately—each with its own connection setup, SQL differences, and result handling?
 
-Data Fabric 位于应用与数据系统之间：**它负责集中管理多种数据源及其连接，为应用提供统一查询入口；产品目标是通过一套查询语言屏蔽不同数据源的语法差异，并统一提交和获取查询结果。**跨源执行可通过查询引擎适配扩展，原始数据仍由各自的数据系统管理。
+Data Fabric puts those sources behind one lightweight, self-hosted gateway. Teams manage connections in one place, while applications use a consistent API and SQL entry point to query registered sources. Supported SQL syntax can be adapted to the target source, reducing the per-source integration work in every application.
 
-- **轻量接入模式：**单源访问可由网关驱动直接完成，不需要额外部署跨源查询引擎。运行服务仍需要按配置准备元数据数据库。
-- **按需扩展跨源查询：**需要跨数据源关联查询时，可通过查询引擎适配层扩展联邦能力；查询时仍会产生网络传输和中间结果交换。
-- **明确的产品边界：**Data Fabric 聚焦应用侧统一入口、数据源连接管理和访问控制，不是数据库、数仓、ETL 或数据复制平台，也不重新实现分布式 SQL 引擎。
+## Why Data Fabric
 
-产品主打轻量、低资源占用和快速部署；当前仓库没有公开的资源或性能基准，因此不承诺具体的内存、CPU 或启动时间数字。
+- **One place to manage sources:** Register and maintain data-source connections, inspect their configuration, and diagnose connectivity through a shared gateway.
+- **One query experience for applications:** Submit queries and retrieve results through a consistent API. SQL dialect adaptation follows the compatibility scope documented in the [SQL v1 contract](SQL_TRANSLATION_FEATURES.md).
+- **Lightweight by default:** Access an individual source through a gateway driver without deploying a separate federation engine. Connect one only when cross-source SQL is needed.
+- **Keep data where it belongs:** Data Fabric provides an access layer rather than a data-copy or ETL platform. Federated query traffic and intermediate results still travel between systems.
+- **Built for mixed environments:** Use one application-facing entry point across the databases, warehouses, lakehouses, object stores, and files used by an enterprise or cluster.
 
-## 当前能力与集成状态
+## SQL Standard and Compatibility
 
-当前仓库提供统一的数据源管理和查询 API，包括驱动注册、连接诊断、配置校验、JWT 与限流组件，以及查询结果分批获取。支持流式读取的驱动可以逐批返回结果，减少大结果集一次性占用的内存。
+The latest published international SQL standard is [ISO/IEC 9075:2023 (SQL:2023)](https://www.iso.org/standard/76584.html). In practice, database products implement different feature sets and add dialect-specific syntax; a standard alone does not make every query portable. See the SQL conformance notes from [PostgreSQL](https://www.postgresql.org/docs/current/features.html) and [MySQL](https://dev.mysql.com/doc/refman/8.4/en/compatibility.html).
 
-**统一查询入口：**应用使用统一 API 访问已登记的数据源。指定 sourceDialect 后，Data Fabric 可在 SQL v1 兼容范围内将常见查询语法转换为目标方言；省略时按目标数据源或查询引擎的原生 SQL 执行。方言转换范围、兼容矩阵和错误行为见 [统一 SQL v1 说明](SQL_TRANSLATION_FEATURES.md)。
+Data Fabric's SQL v1 is a shared, read-only query profile for common application workloads, not a new SQL dialect or a claim of full SQL:2023 conformance. It covers SELECT and UNION queries, projections and basic expressions, WHERE, INNER/LEFT JOIN, GROUP BY and aggregates, HAVING, ORDER BY, and LIMIT/OFFSET. Common scalar and date/time constructs are covered by the documented examples.
 
-**跨源联邦查询：**Data Fabric 提供统一的查询引擎连接适配，可将兼容的外部联邦查询引擎登记为数据源。应用仍通过统一查询 API 提交 SQL；联邦引擎通过自身配置的 catalogs 和 connectors 访问不同数据系统，负责跨目录规划和执行，Data Fabric 负责连接、请求路由、结果归一化及查询生命周期管理。
+For dialect translation, provide sourceDialect to identify the input SQL dialect; Data Fabric translates it to the target source dialect within the [documented compatibility matrix](SQL_TRANSLATION_FEATURES.md). If sourceDialect is omitted, SQL is sent to the target as native SQL without dialect translation. Engine-specific functions, CTEs, window functions, complex types, and time-travel syntax have no shared translation guarantee. Type coercion, NULL ordering, time zones, precision, and other execution semantics remain engine-dependent.
 
-联邦查询是可选扩展：简单的单源访问直接使用网关驱动；需要跨源关联时，再连接外部查询引擎。引擎版本、catalog 权限和 connector 能力由对应部署决定。
+## How It Fits
+
+| Component | Responsibility |
+| --- | --- |
+| Data Fabric | Application-facing API, source connection management, diagnostics, query routing, and result retrieval |
+| Federation engine (optional) | Access multiple systems through catalogs and connectors, then plan and execute cross-source SQL |
+| Source systems | Store and manage the actual data |
+
+Data Fabric is a gateway for applications. It does not replace source databases, become a warehouse, or reimplement a distributed query engine.
 
 ~~~mermaid
 flowchart LR
-    App[AI / RAG / BI / 业务应用] --> Gateway[Data Fabric<br/>统一 API 与数据源管理]
-    Gateway --> Drivers[单源数据源驱动]
-    Drivers --> Sources[数据库 / 数仓 / 湖仓 / 对象存储 / 文件]
-    Gateway --> Adapter[查询引擎连接适配]
-    Adapter --> Engine[外部联邦查询引擎]
-    Engine --> Catalogs[引擎 catalogs 与 connectors]
+    App[AI / RAG / BI / Business Applications] --> Gateway[Data Fabric<br/>Unified API and Source Management]
+    Gateway --> Drivers[Single-Source Drivers]
+    Drivers --> Sources[Databases / Warehouses / Lakehouses / Object Storage / Files]
+    Gateway --> Adapter[Query Engine Adapter]
+    Adapter --> Engine[External Federation Engine]
+    Engine --> Catalogs[Engine Catalogs and Connectors]
     Catalogs --> Sources
 ~~~
 
-图中展示两种接入方式：应用可以经网关驱动访问单个数据源，也可以将 SQL 发往外部联邦查询引擎，由引擎访问其已配置的 catalogs。
+Applications can use a gateway driver for an individual source or send SQL through an external federation engine for cross-catalog queries.
 
-## 数据源范围
+## Capabilities
 
-代码库中定义的代表性类型包括 MySQL、PostgreSQL、Oracle、SQL Server、OceanBase、TiDB、达梦、KingbaseES、ClickHouse、Doris、StarRocks、Snowflake、BigQuery、Iceberg、Delta Lake、Hudi，以及 S3、MinIO、OSS、COS、Azure Blob、HDFS、Ozone 和常见文件格式。类型是否在当前构建中启用、认证方式及高级能力因驱动而异，可通过服务端数据源类型接口和对应实现确认。
+- **Data-source lifecycle:** Create, inspect, update, activate, deactivate, and delete data sources.
+- **Driver registry:** Extend source types through a common driver interface.
+- **Connection diagnostics:** Test connections, validate configuration, and inspect connection health and pool statistics.
+- **Unified query API:** Submit SQL and retrieve results in batches; streaming-capable drivers can reduce peak memory use for large results.
+- **SQL dialect adaptation:** Translate supported query syntax for a target dialect. See the [SQL v1 compatibility matrix](SQL_TRANSLATION_FEATURES.md).
+- **Gateway controls:** JWT authentication, rate limiting, configuration validation, and health checks.
 
-## 快速开始
+## Data Sources
 
-需要 Go 1.26.1 或更高版本，以及按配置准备的元数据数据库。先复制 configs/config.yaml.example 为 configs/config.yaml 并按需调整（敏感字段建议通过环境变量注入，见 [配置说明](docs/configuration.md)），再获取代码：
+The repository defines representative source types across these categories. Available operations and authentication options depend on the source and its driver.
+
+| Category | Examples |
+| --- | --- |
+| Relational databases | MySQL, MariaDB, PostgreSQL, Oracle, SQL Server |
+| Domestic and compatible databases | OceanBase, TiDB, TDSQL, GaussDB, DaMeng, KingbaseES, GBase, Oscar, OpenGauss |
+| Analytical databases | ClickHouse, Doris, StarRocks, Druid, Hologres |
+| Cloud warehouses and big-data platforms | Snowflake, Databricks, Redshift, BigQuery, Hive, MaxCompute |
+| Lakehouse table formats | Apache Iceberg, Delta Lake, Apache Hudi |
+| Object storage and file systems | S3, MinIO, Alibaba OSS, Tencent COS, Azure Blob, HDFS, Apache Ozone |
+| File formats | Parquet, ORC, Avro, CSV, JSON, XML, text |
+
+## Quick Start
+
+### Requirements
+
+- Go 1.26.1 or newer.
+- A configured and reachable metadata database.
+- Network access to the data sources you plan to register.
+- A JWT secret and a credential-encryption keyring supplied through environment variables.
+
+### Run Locally
 
 ~~~bash
 git clone https://github.com/RhinoLink-Tech/data-fabric.git
 cd data-fabric
+cp configs/config.yaml.example configs/config.yaml
 go mod download
+~~~
+
+Configure the metadata database in configs/config.yaml. Generate secrets once and store them securely; reuse the same values across restarts.
+
+~~~bash
+export JWT_SECRET="<stable secret with at least 32 bytes>"
 export DATA_FABRIC_CREDENTIAL_ACTIVE_KEY_ID=dev-v1
-export DATA_FABRIC_CREDENTIAL_KEYS='{"dev-v1":"<base64-encoded-32-byte-key>"}'
+export DATA_FABRIC_CREDENTIAL_KEYS='{"dev-v1":"<base64-encoded 32-byte key>"}'
 go run ./cmd/server
 ~~~
 
-请将示例占位值替换为 openssl rand -base64 32 生成并安全保存的密钥；服务重启时继续使用同一密钥。健康检查路径为 /health，生产环境应通过密钥管理系统注入。
+Generate the JWT secret with openssl rand -hex 32 and the credential key with openssl rand -base64 32. Store both securely and reuse them across restarts. The service health-check endpoint is /health. See the [configuration guide](docs/configuration.md) for deployment settings, secret handling, and key rotation.
 
-数据源会话在引擎支持时以只读方式打开（`security.enforce_read_only`，#20），与应用层 SELECT 校验构成纵深防御；支持的引擎与最小权限账号配置见 [只读访问指南](docs/readonly-access.md)。
+## API Overview
 
-更多信息参见 [API 使用指南](docs/api_usage.md)、[架构设计](docs/architecture.md)、[配置指南](docs/configuration.md)、[开发指南](docs/development.md) 和 [中文完整说明](README_zh.md)。
+| Method | Path | Purpose | Authentication |
+| --- | --- | --- | --- |
+| GET | /health | Service health check | None |
+| GET | /api/v1/database/types | List source types recognized by the service | None |
+| GET | /api/v1/database/compatibility | Inspect database compatibility information | None |
+| GET / POST | /api/v1/datasources | List or create data sources | Bearer when authentication is enabled |
+| GET / PUT / DELETE | /api/v1/datasources/:id | Inspect, update, or delete a data source | Bearer when authentication is enabled |
+| POST | /api/v1/datasources/:id/activate | Activate a data source | Bearer when authentication is enabled |
+| POST | /api/v1/datasources/:id/deactivate | Deactivate a data source | Bearer when authentication is enabled |
+| POST | /api/v1/database/test-connection | Test a data-source connection | Bearer when authentication is enabled |
+| POST | /api/v1/database/validate-config | Validate data-source configuration | Bearer when authentication is enabled |
+| POST | /api/v1/fetch | Run a query and retrieve its first result batch | Bearer (always) |
+| GET | /api/v1/fetch/:query_id/:slug/:token | Retrieve a subsequent result batch | Bearer (always) |
 
-如果这个项目对你有帮助，欢迎点亮 GitHub Star，也欢迎通过 Issue、Pull Request 参与开源共建。
+See the [API usage guide](docs/api_usage.md) for request fields, response structures, and authentication behavior.
 
-## 跨源查询引擎接入
+## Documentation
 
-Data Fabric 通过统一的连接适配接入 Trino、Presto 和 OpenLooKeng 查询引擎。管理员将协调器配置为一个数据源后，应用即可通过 Data Fabric 查询 API 使用引擎 SQL；跨 catalog 查询由协调器及其 connectors 执行。配置示例见 [API 使用指南](docs/api_usage.md)，查询语言边界见 [统一 SQL v1 说明](SQL_TRANSLATION_FEATURES.md)。
+- [API Usage Guide](docs/api_usage.md)
+- [Architecture Guide](docs/architecture.md)
+- [Configuration Guide](docs/configuration.md)
+- [Development Guide](docs/development.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Support](SUPPORT.md)
 
-## 项目与社区
+## Cross-Source Query Engine Integrations
 
-[贡献指南](CONTRIBUTING.md) · [安全政策](SECURITY.md) · [获取帮助](SUPPORT.md) · [发布流程](docs/releasing.md) · [GitHub Releases](https://github.com/RhinoLink-Tech/data-fabric/releases)
+When cross-source SQL is needed, Data Fabric can connect to compatible federation engines through a shared adapter. Trino, Presto, and OpenLooKeng can be registered as data sources; their coordinators use configured catalogs and connectors to plan and execute cross-catalog queries. Applications continue to submit SQL through the Data Fabric query API.
 
-## 许可证
+See the [API usage guide](docs/api_usage.md) for connection setup and the [SQL v1 contract](SQL_TRANSLATION_FEATURES.md) for the supported SQL compatibility scope.
 
-本项目采用 Apache License 2.0，详见 [LICENSE](LICENSE)。
+## Contribute
+
+Issues, pull requests, and documentation improvements are welcome. See the [contribution guide](CONTRIBUTING.md) to get involved.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
