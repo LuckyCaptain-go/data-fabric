@@ -50,7 +50,7 @@ func TestUpdateDataSourcePreservesOmittedSecrets(t *testing.T) {
 				},
 			}
 			repo := &updateDataSourceRepositoryStub{dataSource: existing}
-			svc := NewDataSourceService(repo)
+			svc := NewDataSourceService(repo, nil)
 			req := &UpdateDataSourceRequest{
 				Config: &model.DataSourceConfig{
 					Host: "new-host", Database: "lakehouse", Username: "gateway",
