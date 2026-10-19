@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/config"
@@ -140,7 +142,8 @@ func startHTTPServer(cfg *config.Config, vault *security.CredentialVault) error 
 	log.Printf("Health check available at: http://localhost:%s/health", cfg.Server.Port)
 	log.Printf("API documentation: http://localhost:%s/swagger/index.html", cfg.Server.Port)
 
-	if err := router.Run(":" + cfg.Server.Port); err != nil {
+	server := newHTTPServer(":"+cfg.Server.Port, router, cfg.Server)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("failed to start server: %w", err)
 	}
 	return nil

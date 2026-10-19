@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -66,5 +67,49 @@ func TestSecretsFromEnvOverrideConfigFile(t *testing.T) {
 	}
 	if cfg.Database.Password != "env-pass" {
 		t.Errorf("database.password = %q, want %q (env must win over the file)", cfg.Database.Password, "env-pass")
+	}
+}
+
+func TestHTTPServerTimeoutDefaults(t *testing.T) {
+	resetViper(t)
+	setDefaults()
+
+	var server ServerConfig
+	if err := viper.UnmarshalKey("server", &server); err != nil {
+		t.Fatalf("UnmarshalKey(server) error = %v", err)
+	}
+
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("read_header_timeout = %s, want 10s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 30*time.Second {
+		t.Errorf("read_timeout = %s, want 30s", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 31*time.Minute {
+		t.Errorf("write_timeout = %s, want 31m", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 120*time.Second {
+		t.Errorf("idle_timeout = %s, want 120s", server.IdleTimeout)
+	}
+	if server.MaxRequestBodyBytes != 1<<20 {
+		t.Errorf("max_request_body_bytes = %d, want %d", server.MaxRequestBodyBytes, 1<<20)
+	}
+}
+
+func TestHTTPServerSettingsCanBeOverridden(t *testing.T) {
+	resetViper(t)
+	setDefaults()
+	viper.Set("server.read_timeout", "45s")
+	viper.Set("server.max_request_body_bytes", 2048)
+
+	var server ServerConfig
+	if err := viper.UnmarshalKey("server", &server); err != nil {
+		t.Fatalf("UnmarshalKey(server) error = %v", err)
+	}
+	if server.ReadTimeout != 45*time.Second {
+		t.Errorf("read_timeout = %s, want 45s", server.ReadTimeout)
+	}
+	if server.MaxRequestBodyBytes != 2048 {
+		t.Errorf("max_request_body_bytes = %d, want 2048", server.MaxRequestBodyBytes)
 	}
 }

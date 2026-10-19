@@ -52,6 +52,7 @@ func newRouter(deps routerDeps) *gin.Engine {
 
 	// API v1 group
 	api := router.Group("/api/v1")
+	jsonRequestLimit := middleware.RequestBodyLimit(deps.cfg.Server.MaxRequestBodyBytes)
 
 	// Public endpoints (no authentication required)
 	public := api.Group("")
@@ -64,9 +65,9 @@ func newRouter(deps routerDeps) *gin.Engine {
 	// SQL translation endpoints (no authentication required)
 	sqlGroup := api.Group("/sql")
 	{
-		sqlGroup.POST("/translate", deps.sqlTranslationController.TranslateSQL)
+		sqlGroup.POST("/translate", jsonRequestLimit, deps.sqlTranslationController.TranslateSQL)
 		sqlGroup.GET("/dialects", deps.sqlTranslationController.GetSupportedDialects)
-		sqlGroup.POST("/validate", deps.sqlTranslationController.ValidateSQL)
+		sqlGroup.POST("/validate", jsonRequestLimit, deps.sqlTranslationController.ValidateSQL)
 	}
 
 	// Endpoints gated by the security.enable_auth switch (management API)
@@ -78,11 +79,11 @@ func newRouter(deps routerDeps) *gin.Engine {
 		// Data source endpoints
 		datasources := auth.Group("/datasources")
 		{
-			datasources.POST("", deps.datasourceController.CreateDataSource)
+			datasources.POST("", jsonRequestLimit, deps.datasourceController.CreateDataSource)
 			datasources.GET("", deps.datasourceController.ListDataSources)
 			datasources.GET("/stats", deps.datasourceController.GetDataSourceStats)
 			datasources.GET("/:id", deps.datasourceController.GetDataSource)
-			datasources.PUT("/:id", deps.datasourceController.UpdateDataSource)
+			datasources.PUT("/:id", jsonRequestLimit, deps.datasourceController.UpdateDataSource)
 			datasources.DELETE("/:id", deps.datasourceController.DeleteDataSource)
 			datasources.POST("/:id/activate", deps.datasourceController.ActivateDataSource)
 			datasources.POST("/:id/deactivate", deps.datasourceController.DeactivateDataSource)
@@ -96,15 +97,15 @@ func newRouter(deps routerDeps) *gin.Engine {
 		fetch := api.Group("/fetch")
 		fetch.Use(deps.authMiddleware.RequireAuth())
 		{
-			fetch.POST("", deps.queryController.FetchQuery)
+			fetch.POST("", jsonRequestLimit, deps.queryController.FetchQuery)
 			fetch.GET("/:query_id/:slug/:token", deps.queryController.FetchNextBatch)
 		}
 
 		// Database management endpoints
 		database := auth.Group("/database")
 		{
-			database.POST("/test-connection", deps.databaseController.TestDataSourceConnection)
-			database.POST("/validate-config", deps.databaseController.ValidateDataSourceConfig)
+			database.POST("/test-connection", jsonRequestLimit, deps.databaseController.TestDataSourceConnection)
+			database.POST("/validate-config", jsonRequestLimit, deps.databaseController.ValidateDataSourceConfig)
 			database.GET("/connections/stats", deps.databaseController.GetConnectionStats)
 			database.GET("/health", deps.databaseController.GetDatabaseHealth)
 		}
