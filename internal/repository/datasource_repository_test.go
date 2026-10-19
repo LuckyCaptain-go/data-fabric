@@ -176,3 +176,85 @@ func TestMigrateCredentialsFailsClosedAndRollsBack(t *testing.T) {
 		t.Fatalf("legacy read error = %v", err)
 	}
 }
+
+func TestDataSourceMutationsReturnNotFoundForMissingRecords(t *testing.T) {
+	ctx := context.Background()
+	vault := vaultForTest(t)
+	_, repo := testRepository(t, vault)
+
+	missing := &model.DataSource{
+		ID: "missing", Name: "missing", Type: model.DatabaseTypePostgreSQL,
+		Status: model.DataSourceStatusActive,
+		Config: model.DataSourceConfig{Host: "db", Port: 5432, Database: "analytics", Username: "reader"},
+	}
+	mutations := []struct {
+		name string
+		call func() error
+	}{
+		{name: "update", call: func() error { return repo.Update(ctx, missing) }},
+		{name: "delete", call: func() error { return repo.Delete(ctx, missing.ID) }},
+		{name: "activate", call: func() error { return repo.Activate(ctx, missing.ID) }},
+		{name: "deactivate", call: func() error { return repo.Deactivate(ctx, missing.ID) }},
+		{name: "set error", call: func() error { return repo.SetError(ctx, missing.ID) }},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := mutation.call(); !errors.Is(err, ErrDataSourceNotFound) {
+				t.Fatalf("mutation error = %v, want ErrDataSourceNotFound", err)
+			}
+		})
+	}
+}
+
+func TestDataSourceMutationsAcceptExistingRecordsAndDoNotRecreateOnUpdate(t *testing.T) {
+	ctx := context.Background()
+	vault := vaultForTest(t)
+	db, repo := testRepository(t, vault)
+	dataSource := &model.DataSource{
+		Name: "existing", Type: model.DatabaseTypePostgreSQL, Status: model.DataSourceStatusActive,
+		Config: model.DataSourceConfig{Host: "db", Port: 5432, Database: "analytics", Username: "reader"},
+	}
+	if err := repo.Create(ctx, dataSource); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a driver that reports zero changed rows for an idempotent update.
+	if err := repo.(*dataSourceRepository).checkMutationResult(ctx, dataSource.ID, &gorm.DB{}); err != nil {
+		t.Fatalf("zero-row mutation for existing source: %v", err)
+	}
+	if err := repo.Activate(ctx, dataSource.ID); err != nil {
+		t.Fatalf("idempotent activate: %v", err)
+	}
+	if err := repo.Deactivate(ctx, dataSource.ID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	if err := repo.Deactivate(ctx, dataSource.ID); err != nil {
+		t.Fatalf("idempotent deactivate: %v", err)
+	}
+	if err := repo.SetError(ctx, dataSource.ID); err != nil {
+		t.Fatalf("set error: %v", err)
+	}
+
+	dataSource.Name = "updated"
+	if err := repo.Update(ctx, dataSource); err != nil {
+		t.Fatalf("update existing source: %v", err)
+	}
+	updated, err := repo.GetByID(ctx, dataSource.ID)
+	if err != nil || updated.Name != "updated" {
+		t.Fatalf("updated source = %+v, %v", updated, err)
+	}
+
+	if err := db.Where("id = ?", dataSource.ID).Delete(&model.DataSource{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Update(ctx, dataSource); !errors.Is(err, ErrDataSourceNotFound) {
+		t.Fatalf("update after concurrent deletion = %v, want ErrDataSourceNotFound", err)
+	}
+	var count int64
+	if err := db.Model(&model.DataSource{}).Where("id = ?", dataSource.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("update recreated deleted row; count = %d", count)
+	}
+}

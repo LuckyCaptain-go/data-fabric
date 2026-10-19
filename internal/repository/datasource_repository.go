@@ -96,7 +96,11 @@ func (r *dataSourceRepository) Update(ctx context.Context, ds *model.DataSource)
 	if err != nil {
 		return err
 	}
-	if err := r.db.WithContext(ctx).Save(stored).Error; err != nil {
+	result := r.db.WithContext(ctx).Model(&model.DataSource{}).
+		Where("id = ?", stored.ID).
+		Select("name", "type", "config", "status").
+		Updates(stored)
+	if err := r.checkMutationResult(ctx, stored.ID, result); err != nil {
 		return err
 	}
 	ds.UpdatedAt = stored.UpdatedAt
@@ -104,16 +108,40 @@ func (r *dataSourceRepository) Update(ctx context.Context, ds *model.DataSource)
 }
 
 func (r *dataSourceRepository) Delete(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.DataSource{}).Error
+	result := r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.DataSource{})
+	return r.checkMutationResult(ctx, id, result)
 }
 func (r *dataSourceRepository) Activate(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusActive).Error
+	result := r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusActive)
+	return r.checkMutationResult(ctx, id, result)
 }
 func (r *dataSourceRepository) Deactivate(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusInactive).Error
+	result := r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusInactive)
+	return r.checkMutationResult(ctx, id, result)
 }
 func (r *dataSourceRepository) SetError(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusError).Error
+	result := r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Update("status", model.DataSourceStatusError)
+	return r.checkMutationResult(ctx, id, result)
+}
+
+func (r *dataSourceRepository) checkMutationResult(ctx context.Context, id string, result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+
+	// Some databases report zero affected rows when an existing record already
+	// has the requested values. Distinguish that case from a missing data source.
+	var count int64
+	if err := r.db.WithContext(ctx).Model(&model.DataSource{}).Where("id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrDataSourceNotFound
+	}
+	return nil
 }
 
 func (r *dataSourceRepository) GetActiveByType(ctx context.Context, typ model.DatabaseType) ([]*model.DataSource, error) {
