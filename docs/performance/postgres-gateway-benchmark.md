@@ -3,7 +3,7 @@
 **Run date:** 2026-10-19
 **Database:** PostgreSQL 17.11 on the local WSL environment
 **Runtime:** Go 1.26.1, linux/amd64, 24 visible CPUs
-**Dataset:** synthetic PostgreSQL tables with 500 and 5,000 rows
+**Dataset:** synthetic tables with 500 and 5,000 rows; local PostgreSQL is the simulated source
 
 ## Summary
 
@@ -15,7 +15,7 @@ A percentile value gap is the difference between two independently measured perc
 
 ## Environment and Method
 
-- Uses a real PostgreSQL 17.11 instance and Data Fabric's registered PostgreSQL driver; PostgreSQL wire traffic is real, not simulated.
+- Uses a real local PostgreSQL 17.11 instance as the simulated source, populated with generated synthetic data, and Data Fabric's registered PostgreSQL driver. The database server and driver are real; the benchmark data is simulated.
 - Creates an isolated benchmark database if needed, then creates a synthetic fact table with a primary key on **id**, a 128-character text payload, and a dimension table containing about half as many rows. The payload column has no index.
 - Compares direct PostgreSQL access with the in-process Data Fabric **QueryService**. Both paths run the same workload SQL, fetch the first result batch, scan rows, and JSON-encode a response. The gateway path also performs query validation, source lookup, routing, result normalization, and its database-pool path.
 - The full-page case intentionally fills the first page and checks exact-count behavior; the direct path and service both perform the extra count query.
