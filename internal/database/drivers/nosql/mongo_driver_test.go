@@ -18,7 +18,7 @@ func TestMongoDriverCreation(t *testing.T) {
 		t.Errorf("Expected database type %s, got %s", model.DatabaseTypeMongoDB, driver.GetDatabaseTypeName())
 	}
 
-	expectedCategory := drivers.CategoryFileSystem // Using filesystem category as a placeholder for NoSQL
+	expectedCategory := drivers.CategoryNoSQL
 	if driver.GetCategory() != expectedCategory {
 		t.Errorf("Expected category %s, got %s", expectedCategory, driver.GetCategory())
 	}

@@ -19,6 +19,7 @@ type dataSourceControllerServiceStub struct {
 	dataSource *model.DataSource
 	createErr  error
 	getErr     error
+	updateErr  error
 }
 
 func (s *dataSourceControllerServiceStub) CreateDataSource(context.Context, *service.CreateDataSourceRequest) (*model.DataSource, error) {
@@ -36,7 +37,7 @@ func (s *dataSourceControllerServiceStub) ListDataSources(context.Context, *serv
 	}, nil
 }
 func (s *dataSourceControllerServiceStub) UpdateDataSource(context.Context, string, *service.UpdateDataSourceRequest) (*model.DataSource, error) {
-	return s.dataSource, nil
+	return s.dataSource, s.updateErr
 }
 func (s *dataSourceControllerServiceStub) DeleteDataSource(context.Context, string) error { return nil }
 func (s *dataSourceControllerServiceStub) ActivateDataSource(context.Context, string) error {

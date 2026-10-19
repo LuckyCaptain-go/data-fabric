@@ -346,6 +346,13 @@ func (hc *HealthChecker) PeriodicHealthCheck(ctx context.Context, interval time.
 
 // ValidateDataSourceConfiguration validates a data source configuration
 func (hc *HealthChecker) ValidateDataSourceConfiguration(config *model.DataSourceConfig, dbType model.DatabaseType) error {
+	if config == nil {
+		return fmt.Errorf("data source config is required")
+	}
+	if !hc.IsSupportedDataSourceType(dbType) {
+		return fmt.Errorf("unsupported database type: %s", dbType)
+	}
+
 	// Get driver for the database type
 	driver, err := hc.registry.GetDriver(dbType)
 	if err != nil {
@@ -362,29 +369,40 @@ func (hc *HealthChecker) ValidateDataSourceConfiguration(config *model.DataSourc
 			return hc.validateS3CSVConfig(config)
 		}
 		// Object storage (S3, etc.) requires bucket and region
-		return hc.validateObjectStorageConfig(config, dbType)
+		return hc.validateObjectStorageConfig(config, driver)
 	case drivers.CategoryFileSystem:
-		// File systems (HDFS) require namenode and path
-		return hc.validateFileSystemConfig(config, dbType)
+		// File systems (HDFS/Ozone) use the registered driver's port defaults.
+		return hc.validateFileSystemConfig(config, driver)
+	case drivers.CategoryTableFormat:
+		return hc.validateTableFormatConfig(config, driver)
+	case drivers.CategoryNoSQL:
+		return hc.validateNoSQLConfig(config, driver)
 	default:
 		// Standard databases require host, port, database, username
 		return hc.validateDatabaseConfig(config, driver)
 	}
 }
 
+// IsSupportedDataSourceType reports whether the active driver registry can
+// create a driver for the requested database type. API handlers and services
+// use this instead of maintaining independent allowlists.
+func (hc *HealthChecker) IsSupportedDataSourceType(dbType model.DatabaseType) bool {
+	return hc != nil && hc.registry != nil && hc.registry.IsSupported(dbType)
+}
+
 // validateDatabaseConfig validates standard database configurations
 func (hc *HealthChecker) validateDatabaseConfig(config *model.DataSourceConfig, driver drivers.Driver) error {
 	// Check required fields
-	if config.Host == "" {
+	if strings.TrimSpace(config.Host) == "" {
 		return fmt.Errorf("host is required")
 	}
-	if config.Port <= 0 {
-		config.Port = driver.GetDefaultPort()
+	if err := applyDriverDefaultPort(config, driver); err != nil {
+		return err
 	}
-	if config.Database == "" {
+	if strings.TrimSpace(config.Database) == "" {
 		return fmt.Errorf("database name is required")
 	}
-	if config.Username == "" {
+	if strings.TrimSpace(config.Username) == "" {
 		return fmt.Errorf("username is required")
 	}
 
@@ -393,20 +411,66 @@ func (hc *HealthChecker) validateDatabaseConfig(config *model.DataSourceConfig, 
 	return driver.ValidateDSN(dsn)
 }
 
+func applyDriverDefaultPort(config *model.DataSourceConfig, driver drivers.Driver) error {
+	if config.Port < 0 || config.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	if config.Port == 0 {
+		defaultPort := driver.GetDefaultPort()
+		if defaultPort <= 0 || defaultPort > 65535 {
+			return fmt.Errorf("port is required because the driver has no valid default")
+		}
+		config.Port = defaultPort
+	}
+	return nil
+}
+
+func (hc *HealthChecker) validateTableFormatConfig(config *model.DataSourceConfig, driver drivers.Driver) error {
+	if strings.TrimSpace(config.Host) == "" {
+		return fmt.Errorf("catalog or storage endpoint is required")
+	}
+	if strings.TrimSpace(config.Database) == "" {
+		return fmt.Errorf("warehouse or table namespace is required")
+	}
+	if err := applyDriverDefaultPort(config, driver); err != nil {
+		return err
+	}
+	return driver.ValidateDSN(driver.BuildDSN(config))
+}
+
+func (hc *HealthChecker) validateNoSQLConfig(config *model.DataSourceConfig, driver drivers.Driver) error {
+	if strings.TrimSpace(config.Host) == "" {
+		return fmt.Errorf("host is required")
+	}
+	if strings.TrimSpace(config.Database) == "" {
+		return fmt.Errorf("database name is required")
+	}
+	if err := applyDriverDefaultPort(config, driver); err != nil {
+		return err
+	}
+	if config.Password != "" && strings.TrimSpace(config.Username) == "" {
+		return fmt.Errorf("username is required when a password is configured")
+	}
+	return driver.ValidateDSN(driver.BuildDSN(config))
+}
+
 // validateObjectStorageConfig validates object storage configurations
-func (hc *HealthChecker) validateObjectStorageConfig(config *model.DataSourceConfig, dbType model.DatabaseType) error {
+func (hc *HealthChecker) validateObjectStorageConfig(config *model.DataSourceConfig, driver drivers.Driver) error {
 	// Object storage requires bucket name and region
-	if config.Database == "" { // Use Database field for bucket name
+	if strings.TrimSpace(config.Database) == "" { // Use Database field for bucket name
 		return fmt.Errorf("bucket name is required")
 	}
 
 	// Region is required for most object storage providers
 	// (stored in Host field for non-SQL sources)
-	if config.Host == "" {
+	if strings.TrimSpace(config.Host) == "" {
 		return fmt.Errorf("region is required")
 	}
+	if err := applyDriverDefaultPort(config, driver); err != nil {
+		return err
+	}
 
-	return nil
+	return driver.ValidateDSN(driver.BuildDSN(config))
 }
 
 func (hc *HealthChecker) validateS3CSVConfig(config *model.DataSourceConfig) error {
@@ -430,15 +494,13 @@ func (hc *HealthChecker) validateS3CSVConfig(config *model.DataSourceConfig) err
 }
 
 // validateFileSystemConfig validates file system configurations
-func (hc *HealthChecker) validateFileSystemConfig(config *model.DataSourceConfig, dbType model.DatabaseType) error {
+func (hc *HealthChecker) validateFileSystemConfig(config *model.DataSourceConfig, driver drivers.Driver) error {
 	// HDFS/Ozone require namenode/ozonename address
-	if config.Host == "" {
+	if strings.TrimSpace(config.Host) == "" {
 		return fmt.Errorf("namenode address is required")
 	}
-
-	// Port is required
-	if config.Port <= 0 {
-		config.Port = 8020 // Default HDFS port
+	if err := applyDriverDefaultPort(config, driver); err != nil {
+		return err
 	}
 
 	// Path is optional (uses root if not specified)

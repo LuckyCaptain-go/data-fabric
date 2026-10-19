@@ -47,7 +47,7 @@ func (dc *DatabaseController) GetDatabaseTypes(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param request body model.DataSourceConfig true "Data source configuration"
-// @Param type query string true "Database type (mysql, mariadb, postgresql, oracle, trino, presto, openlookeng)"
+// @Param type query string true "Registered database type (see /api/v1/database/types)"
 // @Success 200 {object} response.StandardResponse{data=database.HealthCheckResult}
 // @Failure 400 {object} response.StandardResponse
 // @Router /api/v1/database/test-connection [post]
@@ -66,15 +66,13 @@ func (dc *DatabaseController) TestDataSourceConnection(c *gin.Context) {
 		return
 	}
 
-	// Validate database type
+	// Validate the type against the active driver registry. This keeps the
+	// endpoint aligned with the same driver set used by connection services.
 	dbType := model.DatabaseType(dbTypeStr)
-	switch dbType {
-	case model.DatabaseTypeMySQL, model.DatabaseTypeMariaDB, model.DatabaseTypePostgreSQL, model.DatabaseTypeOracle, model.DatabaseTypeTrino, model.DatabaseTypePresto, model.DatabaseTypeOpenLooKeng:
-		// Valid database types
-	default:
+	if !dc.healthChecker.IsSupportedDataSourceType(dbType) {
 		c.JSON(http.StatusBadRequest, response.ErrorResponse(
 			"INVALID_TYPE",
-			"Invalid database type. Supported types: mysql, mariadb, postgresql, oracle, trino, presto, openlookeng",
+			fmt.Sprintf("Unsupported database type: %s", dbType),
 			"",
 			correlationID,
 		))
@@ -142,15 +140,13 @@ func (dc *DatabaseController) ValidateDataSourceConfig(c *gin.Context) {
 		return
 	}
 
-	// Validate database type
+	// Validate the type against the active driver registry. This keeps the
+	// endpoint aligned with the same driver set used by connection services.
 	dbType := model.DatabaseType(req.Type)
-	switch dbType {
-	case model.DatabaseTypeMySQL, model.DatabaseTypeMariaDB, model.DatabaseTypePostgreSQL, model.DatabaseTypeOracle, model.DatabaseTypeTrino, model.DatabaseTypePresto, model.DatabaseTypeOpenLooKeng:
-		// Valid database types
-	default:
+	if !dc.healthChecker.IsSupportedDataSourceType(dbType) {
 		c.JSON(http.StatusBadRequest, response.ErrorResponse(
 			"INVALID_TYPE",
-			"Invalid database type. Supported types: mysql, mariadb, postgresql, oracle, trino, presto, openlookeng",
+			fmt.Sprintf("Unsupported database type: %s", dbType),
 			"",
 			correlationID,
 		))

@@ -1,15 +1,20 @@
 package service
 
-import "github.com/RhinoLink-Tech/data-fabric/internal/repository"
+import (
+	"errors"
 
-// The service layer returns the repository's errors, some of them wrapped with
-// %w. These are aliases rather than separate values so that a caller comparing
-// against them matches the error the repository actually returns; compare with
-// errors.Is, which also sees through the wrapping.
+	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
+)
+
+// Repository errors are aliases so errors.Is matches the repository values
+// through service-layer wrapping. Validation sentinels identify client errors
+// before a request reaches persistence.
 var (
-	ErrDataSourceNotFound  = repository.ErrDataSourceNotFound
-	ErrDataSourceExists    = repository.ErrDataSourceExists
-	ErrInvalidUUID         = repository.ErrInvalidUUID
-	ErrInvalidDatabaseType = repository.ErrInvalidDatabaseType
-	ErrConnectionFailed    = repository.ErrConnectionFailed
+	ErrDataSourceNotFound        = repository.ErrDataSourceNotFound
+	ErrDataSourceExists          = repository.ErrDataSourceExists
+	ErrInvalidUUID               = repository.ErrInvalidUUID
+	ErrInvalidDatabaseType       = repository.ErrInvalidDatabaseType
+	ErrConnectionFailed          = repository.ErrConnectionFailed
+	ErrUnsupportedDataSourceType = errors.New("unsupported data source type")
+	ErrInvalidDataSourceConfig   = errors.New("invalid data source configuration")
 )
