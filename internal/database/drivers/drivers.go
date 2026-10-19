@@ -20,6 +20,7 @@ const (
 	CategoryQueryEngine        DriverCategory = "query_engine"
 	CategoryDomesticDatabase   DriverCategory = "domestic_database"
 	CategoryFileSystem         DriverCategory = "file_system"
+	CategoryNoSQL              DriverCategory = "nosql"
 )
 
 // DriverCapabilities defines what operations a driver supports

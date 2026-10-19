@@ -181,6 +181,14 @@ func (dc *DataSourceController) CreateDataSource(c *gin.Context) {
 
 	dataSource, err := dc.service.CreateDataSource(c.Request.Context(), &req)
 	if err != nil {
+		if errors.Is(err, service.ErrUnsupportedDataSourceType) {
+			dc.sendError(c, http.StatusBadRequest, "INVALID_TYPE", "Unsupported data source type")
+			return
+		}
+		if errors.Is(err, service.ErrInvalidDataSourceConfig) {
+			dc.sendError(c, http.StatusBadRequest, "INVALID_CONFIG", "Invalid data source configuration")
+			return
+		}
 		if errors.Is(err, service.ErrDataSourceExists) {
 			appErr := utils.NewConflictError("data source", "Data source with this name already exists")
 			dc.sendError(c, utils.GetErrorStatus(appErr), appErr.Code, appErr.Message)
@@ -316,6 +324,14 @@ func (dc *DataSourceController) UpdateDataSource(c *gin.Context) {
 
 	dataSource, err := dc.service.UpdateDataSource(c.Request.Context(), id, &req)
 	if err != nil {
+		if errors.Is(err, service.ErrUnsupportedDataSourceType) {
+			dc.sendError(c, http.StatusBadRequest, "INVALID_TYPE", "Unsupported data source type")
+			return
+		}
+		if errors.Is(err, service.ErrInvalidDataSourceConfig) {
+			dc.sendError(c, http.StatusBadRequest, "INVALID_CONFIG", "Invalid data source configuration")
+			return
+		}
 		if errors.Is(err, service.ErrDataSourceNotFound) {
 			dc.sendError(c, http.StatusNotFound, "DATASOURCE_NOT_FOUND", "Data source not found")
 			return

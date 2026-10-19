@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/RhinoLink-Tech/data-fabric/internal/database"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
 )
@@ -35,9 +36,10 @@ func TestUpdateDataSourcePreservesOmittedSecrets(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			existing := &model.DataSource{
-				ID: id,
+				ID:   id,
+				Type: model.DatabaseTypeTrino,
 				Config: model.DataSourceConfig{
-					Host: "old-host", Database: "lakehouse", Username: "gateway",
+					Host: "old-host", Database: "lakehouse", Username: "gateway", SSL: true,
 					Password: "old-password",
 					AdditionalProps: map[string]interface{}{
 						"source":       "old-source",
@@ -50,10 +52,10 @@ func TestUpdateDataSourcePreservesOmittedSecrets(t *testing.T) {
 				},
 			}
 			repo := &updateDataSourceRepositoryStub{dataSource: existing}
-			svc := NewDataSourceService(repo, nil)
+			svc := NewDataSourceService(repo, nil, database.NewHealthChecker(nil))
 			req := &UpdateDataSourceRequest{
 				Config: &model.DataSourceConfig{
-					Host: "new-host", Database: "lakehouse", Username: "gateway",
+					Host: "new-host", Database: "lakehouse", Username: "gateway", SSL: true,
 					Password: tt.newPassword,
 					AdditionalProps: map[string]interface{}{
 						"source": "new-source",

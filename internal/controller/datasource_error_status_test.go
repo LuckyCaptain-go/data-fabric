@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
+	"github.com/RhinoLink-Tech/data-fabric/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -47,6 +48,20 @@ func TestDataSourceErrorStatusMapping(t *testing.T) {
 			wantStatus: http.StatusConflict,
 		},
 		{
+			name:       "unsupported data-source type is a 400",
+			err:        service.ErrUnsupportedDataSourceType,
+			body:       createBody,
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.CreateDataSource(c) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid data-source config on update is a 400",
+			err:        service.ErrInvalidDataSourceConfig,
+			body:       `{"config":{"host":"db.example.test","database":"analytics","username":"gateway"}}`,
+			handler:    func(dc *DataSourceController, c *gin.Context) { dc.UpdateDataSource(c) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:       "unexpected failure is a 500",
 			err:        errors.New("connection reset by peer"),
 			handler:    func(dc *DataSourceController, c *gin.Context) { dc.GetDataSource(c) },
@@ -59,6 +74,7 @@ func TestDataSourceErrorStatusMapping(t *testing.T) {
 			controller := NewDataSourceController(&dataSourceControllerServiceStub{
 				createErr: tt.err,
 				getErr:    tt.err,
+				updateErr: tt.err,
 			})
 
 			recorder := httptest.NewRecorder()

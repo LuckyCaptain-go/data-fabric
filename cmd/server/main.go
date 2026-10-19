@@ -104,7 +104,7 @@ func startHTTPServer(cfg *config.Config, vault *security.CredentialVault) error 
 	rateLimiter := middleware.NewRateLimiter(rateLimitConfig)
 
 	// Initialize services
-	datasourceService := service.NewDataSourceService(datasourceRepo, connPool)
+	datasourceService := service.NewDataSourceService(datasourceRepo, connPool, healthChecker)
 
 	// Initialize streaming service
 	streamingService := service.NewStreamingService(datasourceRepo, connPool)

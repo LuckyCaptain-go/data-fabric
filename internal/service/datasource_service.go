@@ -28,9 +28,15 @@ type ConnectionInvalidator interface {
 	InvalidateDataSource(dataSourceID string) error
 }
 
+type DataSourceConfigValidator interface {
+	IsSupportedDataSourceType(dbType model.DatabaseType) bool
+	ValidateDataSourceConfiguration(config *model.DataSourceConfig, dbType model.DatabaseType) error
+}
+
 type dataSourceService struct {
-	repo     repository.DataSourceRepository
-	invalids ConnectionInvalidator // Optional; nil keeps the old no-op behavior
+	repo            repository.DataSourceRepository
+	invalids        ConnectionInvalidator
+	configValidator DataSourceConfigValidator
 }
 
 type CreateDataSourceRequest struct {
@@ -63,14 +69,12 @@ type DataSourceStatsResponse struct {
 	ByStatus map[model.DataSourceStatus]int64 `json:"byStatus"`
 }
 
-// NewDataSourceService creates a new instance of DataSourceService. The
-// invalidator, when non-nil, is used to evict pooled connections whenever a
-// data source is updated, activated, deactivated or deleted (#117); it may be
-// nil for deployments that never query (registry-only).
-func NewDataSourceService(repo repository.DataSourceRepository, invalidator ConnectionInvalidator) DataSourceService {
+// NewDataSourceService creates a new instance of DataSourceService.
+func NewDataSourceService(repo repository.DataSourceRepository, invalidator ConnectionInvalidator, configValidator DataSourceConfigValidator) DataSourceService {
 	return &dataSourceService{
-		repo:     repo,
-		invalids: invalidator,
+		repo:            repo,
+		invalids:        invalidator,
+		configValidator: configValidator,
 	}
 }
 
@@ -87,7 +91,28 @@ func (s *dataSourceService) invalidatePool(dataSourceID string) {
 	}
 }
 
+func (s *dataSourceService) validateDataSourceConfig(config *model.DataSourceConfig, dbType model.DatabaseType) error {
+	if s.configValidator == nil {
+		return fmt.Errorf("%w: validator unavailable", ErrInvalidDataSourceConfig)
+	}
+	if !s.configValidator.IsSupportedDataSourceType(dbType) {
+		return fmt.Errorf("%w: %s", ErrUnsupportedDataSourceType, dbType)
+	}
+	if err := s.configValidator.ValidateDataSourceConfiguration(config, dbType); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidDataSourceConfig, err)
+	}
+	return nil
+}
+
 func (s *dataSourceService) CreateDataSource(ctx context.Context, req *CreateDataSourceRequest) (*model.DataSource, error) {
+	if req == nil {
+		return nil, fmt.Errorf("%w: request is required", ErrInvalidDataSourceConfig)
+	}
+	config := req.Config
+	if err := s.validateDataSourceConfig(&config, req.Type); err != nil {
+		return nil, err
+	}
+
 	// Check if data source with the same name already exists
 	if existing, _ := s.repo.GetByName(ctx, req.Name); existing != nil {
 		return nil, repository.ErrDataSourceExists
@@ -97,7 +122,7 @@ func (s *dataSourceService) CreateDataSource(ctx context.Context, req *CreateDat
 	dataSource := &model.DataSource{
 		Name:   req.Name,
 		Type:   req.Type,
-		Config: req.Config,
+		Config: config,
 		Status: model.DataSourceStatusActive,
 	}
 
@@ -201,6 +226,10 @@ func cloneAdditionalProperties(source map[string]interface{}) map[string]interfa
 }
 
 func (s *dataSourceService) UpdateDataSource(ctx context.Context, id string, req *UpdateDataSourceRequest) (*model.DataSource, error) {
+	if req == nil {
+		return nil, fmt.Errorf("%w: request is required", ErrInvalidDataSourceConfig)
+	}
+
 	// Validate UUID format
 	if _, err := uuid.Parse(id); err != nil {
 		return nil, repository.ErrInvalidUUID
@@ -221,6 +250,10 @@ func (s *dataSourceService) UpdateDataSource(ctx context.Context, id string, req
 	}
 	if req.Status != nil {
 		dataSource.Status = *req.Status
+	}
+
+	if err := s.validateDataSourceConfig(&dataSource.Config, dataSource.Type); err != nil {
+		return nil, err
 	}
 
 	if err := s.repo.Update(ctx, dataSource); err != nil {

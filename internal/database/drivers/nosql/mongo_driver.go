@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +27,7 @@ type MongoDriver struct {
 // NewMongoDriver creates a new MongoDB driver instance
 func NewMongoDriver() *MongoDriver {
 	return &MongoDriver{
-		base: drivers.NewDriverBase(model.DatabaseTypeMongoDB, drivers.CategoryFileSystem),
+		base: drivers.NewDriverBase(model.DatabaseTypeMongoDB, drivers.CategoryNoSQL),
 	}
 }
 
@@ -105,28 +107,21 @@ func (md *MongoDriver) GetDefaultPort() int {
 
 // BuildDSN builds a MongoDB connection string from configuration
 func (md *MongoDriver) BuildDSN(config *model.DataSourceConfig) string {
-	// Build MongoDB connection string
-	// Format: mongodb://username:password@host:port/database
-	dsn := fmt.Sprintf("mongodb://%s:%s@%s:%d/%s",
-		config.Username,
-		url.QueryEscape(config.Password),
-		config.Host,
-		config.Port,
-		config.Database,
-	)
-
-	// Add additional properties
-	if config.AdditionalProps != nil {
-		params := []string{}
-		for k, v := range config.AdditionalProps {
-			params = append(params, fmt.Sprintf("%s=%v", k, v))
-		}
-		if len(params) > 0 {
-			dsn += "?" + strings.Join(params, "&")
-		}
+	parsed := &url.URL{
+		Scheme: "mongodb",
+		Host:   net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
+		Path:   "/" + config.Database,
+	}
+	if config.Username != "" {
+		parsed.User = url.UserPassword(config.Username, config.Password)
 	}
 
-	return dsn
+	query := parsed.Query()
+	for key, value := range config.AdditionalProps {
+		query.Set(key, fmt.Sprint(value))
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 // GetDatabaseTypeName returns the database type name

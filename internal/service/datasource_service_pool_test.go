@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/RhinoLink-Tech/data-fabric/internal/database"
 	"github.com/RhinoLink-Tech/data-fabric/internal/model"
 	"github.com/RhinoLink-Tech/data-fabric/internal/repository"
 )
@@ -51,7 +52,7 @@ func newInvalidationTestService() (*dataSourceService, *recordingInvalidator) {
 		Status: model.DataSourceStatusActive,
 		Config: model.DataSourceConfig{Host: "db", Port: 3306, Database: "demo", Username: "u"},
 	}}
-	svc := NewDataSourceService(repo, invalidator).(*dataSourceService)
+	svc := NewDataSourceService(repo, invalidator, database.NewHealthChecker(nil)).(*dataSourceService)
 	return svc, invalidator
 }
 
