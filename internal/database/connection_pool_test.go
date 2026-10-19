@@ -170,21 +170,31 @@ func stubPoolDataSource(id string) *model.DataSource {
 }
 
 // A pool built from a different configuration fingerprint must not be handed
-// out again: the entry is evicted even when the rebuild then fails (#117).
+// out again: it is replaced by a pool built from the current configuration
+// (#117).
 func TestGetConnectionEvictsPoolWithStaleFingerprint(t *testing.T) {
+	GetDriverRegistry().RegisterDriver(stubPoolTestType, stubPoolDriver{})
 	pool := NewConnectionPool(nil, nil, false)
-	pool.pools["ds-1"] = deadDB()
+	stale := deadDB()
+	pool.pools["ds-1"] = stale
 	pool.fingerprints["ds-1"] = "built-from-old-config"
 
-	if _, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1")); err == nil {
-		t.Fatal("GetConnection unexpectedly succeeded for an unregistered stub type")
+	fresh, err := pool.GetConnection(context.Background(), stubPoolDataSource("ds-1"))
+	if err != nil {
+		t.Fatalf("GetConnection failed to rebuild from the current configuration: %v", err)
+	}
+	if fresh == stale {
+		t.Fatal("GetConnection handed out the pool built from the stale configuration")
 	}
 
-	if _, stillPooled := pool.pools["ds-1"]; stillPooled {
-		t.Error("a pool with a stale configuration fingerprint is still pooled")
+	pool.mutex.RLock()
+	installed, fingerprint := pool.pools["ds-1"], pool.fingerprints["ds-1"]
+	pool.mutex.RUnlock()
+	if installed != fresh {
+		t.Error("the pool built from the current configuration was not installed")
 	}
-	if _, hasFingerprint := pool.fingerprints["ds-1"]; hasFingerprint {
-		t.Error("the stale fingerprint entry survived eviction")
+	if want := dataSourceFingerprint(stubPoolDataSource("ds-1")); fingerprint != want {
+		t.Errorf("installed fingerprint = %q, want the current configuration fingerprint %q", fingerprint, want)
 	}
 }
 

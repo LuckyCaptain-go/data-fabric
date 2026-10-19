@@ -68,13 +68,16 @@ func (cp *ConnectionPool) GetConnection(ctx context.Context, dataSource *model.D
 			return db, nil
 		}
 
-		// Connection is dead, remove and recreate
-		cp.removeConnection(dataSource.ID)
+		// Connection is dead. Evict exactly the instance that failed the
+		// ping: by the time we take the lock, another goroutine may already
+		// have replaced it with a fresh pool, which must survive (#119).
+		cp.removeConnectionIfSame(dataSource.ID, db)
 	} else {
 		// Either no pool exists, or the pooled one was built from a different
-		// configuration fingerprint; drop the stale entry so the rebuild
-		// starts clean and the old connections close (#117).
-		cp.removeConnection(dataSource.ID)
+		// configuration fingerprint. Evict only a demonstrably stale entry —
+		// atomically, so a pool concurrently installed from the current
+		// configuration is never dropped right after being built (#119).
+		cp.removeStaleConnection(dataSource.ID, fingerprint)
 	}
 
 	// Create new connection
@@ -289,6 +292,45 @@ func (cp *ConnectionPool) removeConnection(dataSourceID string) {
 	db, existed := cp.takeConnection(dataSourceID)
 	if existed {
 		db.Close()
+	}
+}
+
+// removeConnectionIfSame evicts the pooled entry only when it is still the
+// exact instance the caller found dead. Checking and dropping happen under
+// one lock, so a fresh pool installed meanwhile is never closed out from
+// under its users (#119).
+func (cp *ConnectionPool) removeConnectionIfSame(dataSourceID string, dead *sql.DB) {
+	cp.mutex.Lock()
+	current, exists := cp.pools[dataSourceID]
+	if exists && current == dead {
+		delete(cp.pools, dataSourceID)
+		delete(cp.fingerprints, dataSourceID)
+	}
+	cp.mutex.Unlock()
+
+	if exists && current == dead {
+		dead.Close()
+		cp.setHealth(dataSourceID, false)
+	}
+}
+
+// removeStaleConnection evicts the pooled entry only when its configuration
+// fingerprint differs from the current one. The comparison and the drop are
+// atomic, so a concurrently created pool built from the current configuration
+// survives (#117, #119).
+func (cp *ConnectionPool) removeStaleConnection(dataSourceID, fingerprint string) {
+	cp.mutex.Lock()
+	db, exists := cp.pools[dataSourceID]
+	stale := exists && cp.fingerprints[dataSourceID] != fingerprint
+	if stale {
+		delete(cp.pools, dataSourceID)
+		delete(cp.fingerprints, dataSourceID)
+	}
+	cp.mutex.Unlock()
+
+	if stale {
+		db.Close()
+		cp.setHealth(dataSourceID, false)
 	}
 }
 
