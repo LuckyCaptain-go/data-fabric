@@ -125,9 +125,9 @@ Generate the JWT secret with openssl rand -hex 32 and the credential key with op
 
 Data Fabric is a query gateway, not a query accelerator. Compared with calling an engine directly, a request passes through an additional application-to-gateway network hop and gateway-side authentication, validation, routing, result normalization, and JSON encoding. Dialect conversion adds work when requested. The extra layer is proportionally more visible for short queries; engine execution and data transfer matter more for longer or larger queries.
 
-The first fetch response includes a total row count, which the current query path obtains with a separate count query at the source. For joins, aggregations, or large datasets, this count can add significant source-engine work and may affect latency more than gateway processing.
+For the first result page, Data Fabric derives the exact total from the returned rows when the page is not full. A full page is ambiguous, so the gateway runs a separate count query to preserve the exact total; on large joins or aggregations, that count may add source-engine work.
 
-There is no workload-independent percentage for this overhead. Measure direct and gateway paths with the same engine, SQL, data, network, connection state, result size, and row-count behavior; compare latency percentiles, throughput, and CPU/memory use before quoting a number.
+In a local synthetic PostgreSQL benchmark with 500 rows, the in-process Data Fabric query service measured 0.563 ms P50 and 0.969 ms P95. Direct access with the same result and inferred total measured 0.327 ms P50 and 0.577 ms P95. The gaps between the reported percentiles were 0.236 ms (P50) and 0.392 ms (P95). This run excludes HTTP, authentication middleware, and the client-to-gateway network hop. Results vary by environment and workload; they are measurements, not latency limits or production guarantees. See the [reproducible benchmark report](docs/performance/postgres-gateway-benchmark.md) for the method, full results, and run instructions.
 
 ## API Overview
 
